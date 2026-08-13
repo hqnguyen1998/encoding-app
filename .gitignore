@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-electron/
+release/
+*.log
+.DS_Store
+vendor/ffmpeg/win-x64/ffmpeg.exe
+vendor/ffmpeg/win-x64/ffprobe.exe
+vendor/rclone/mac-arm64/rclone
+vendor/rclone/win-x64/rclone.exe

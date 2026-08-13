@@ -1,0 +1,129 @@
+{
+  "name": "dao-phim-encoding",
+  "version": "0.12.1",
+  "private": true,
+  "description": "Đảo Phim Encoding - Desktop HLS encoder for macOS and Windows",
+  "main": "dist-electron/electron/main.js",
+  "author": "Đảo Phim",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "build": "npm run build:renderer && npm run build:electron",
+    "build:renderer": "vite build",
+    "build:electron": "node scripts/clean-electron.cjs && tsc -p electron/tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "smoke:encode": "npm run build:electron && node scripts/smoke-encode.cjs",
+    "typecheck": "tsc --noEmit && tsc -p electron/tsconfig.json --noEmit",
+    "dist": "npm run build && electron-builder",
+    "prepare:vendor:mac": "node scripts/prepare-vendor.cjs mac-arm64",
+    "prepare:vendor:win": "node scripts/prepare-vendor.cjs win-x64",
+    "dist:mac": "npm run prepare:vendor:mac && npm run build && electron-builder --mac dmg",
+    "dist:win": "npm run prepare:vendor:win && npm run build && electron-builder --win nsis --x64"
+  },
+  "dependencies": {
+    "@ffprobe-installer/ffprobe": "2.1.2",
+    "ffmpeg-static": "5.3.0",
+    "lucide-react": "1.31.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "26.2.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "@vitejs/plugin-react": "6.0.5",
+    "concurrently": "10.0.4",
+    "cross-env": "10.1.0",
+    "electron": "43.4.0",
+    "electron-builder": "26.15.3",
+    "typescript": "7.0.2",
+    "vite": "8.2.1",
+    "vitest": "4.1.10",
+    "wait-on": "9.1.0"
+  },
+  "build": {
+    "appId": "space.daophim.encoding",
+    "productName": "Dao Phim Encoding",
+    "executableName": "Dao Phim Encoding",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**",
+      "node_modules/@ffprobe-installer/**"
+    ],
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json",
+      "node_modules/ffmpeg-static/**/*",
+      "node_modules/@ffprobe-installer/**/*"
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "mac": {
+      "category": "public.app-category.video",
+      "extendInfo": {
+        "CFBundleDisplayName": "Đảo Phim Encoding",
+        "CFBundleName": "Dao Phim Encoding"
+      },
+      "extraResources": [
+        {
+          "from": "vendor/rclone/mac-arm64/rclone",
+          "to": "bin/rclone"
+        },
+        {
+          "from": "vendor/rclone/COPYING.txt",
+          "to": "licenses/rclone-COPYING.txt"
+        }
+      ],
+      "target": [
+        "dmg"
+      ],
+      "icon": "build/icon.png"
+    },
+    "dmg": {
+      "artifactName": "Dao-Phim-Encoding-${version}-${arch}.${ext}",
+      "title": "Đảo Phim Encoding ${version}"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "artifactName": "Dao-Phim-Encoding-Setup-${version}-${arch}.${ext}",
+      "extraResources": [
+        {
+          "from": "vendor/ffmpeg/win-x64/ffmpeg.exe",
+          "to": "bin/ffmpeg.exe"
+        },
+        {
+          "from": "vendor/ffmpeg/win-x64/ffprobe.exe",
+          "to": "bin/ffprobe.exe"
+        },
+        {
+          "from": "vendor/rclone/win-x64/rclone.exe",
+          "to": "bin/rclone.exe"
+        },
+        {
+          "from": "vendor/rclone/COPYING.txt",
+          "to": "licenses/rclone-COPYING.txt"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Đảo Phim Encoding",
+      "uninstallDisplayName": "Đảo Phim Encoding"
+    }
+  }
+}

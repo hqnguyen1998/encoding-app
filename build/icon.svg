@@ -1,0 +1,25 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="160" y1="96" x2="864" y2="928" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#191D23"/>
+      <stop offset="1" stop-color="#090B0E"/>
+    </linearGradient>
+    <linearGradient id="hot" x1="326" y1="284" x2="712" y2="760" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFD078"/>
+      <stop offset="0.52" stop-color="#FFB24A"/>
+      <stop offset="1" stop-color="#FF8138"/>
+    </linearGradient>
+    <filter id="glow" x="160" y="120" width="704" height="784" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="26"/>
+    </filter>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="224" fill="url(#bg)"/>
+  <rect x="65.5" y="65.5" width="893" height="893" rx="222.5" stroke="white" stroke-opacity="0.09" stroke-width="3"/>
+  <path d="M331 696V460C331 440.118 347.118 424 367 424H425V696H331Z" fill="#FFAF47" fill-opacity="0.22" filter="url(#glow)"/>
+  <path d="M459 696V300C459 280.118 475.118 264 495 264H553V696H459Z" fill="#FFAF47" fill-opacity="0.22" filter="url(#glow)"/>
+  <path d="M587 696V374C587 354.118 603.118 338 623 338H681V696H587Z" fill="#FFAF47" fill-opacity="0.22" filter="url(#glow)"/>
+  <rect x="304" y="400" width="128" height="320" rx="42" fill="url(#hot)"/>
+  <rect x="448" y="240" width="128" height="480" rx="42" fill="url(#hot)"/>
+  <rect x="592" y="314" width="128" height="406" rx="42" fill="url(#hot)"/>
+  <path d="M320 808H704" stroke="white" stroke-opacity="0.22" stroke-width="24" stroke-linecap="round"/>
+</svg>
