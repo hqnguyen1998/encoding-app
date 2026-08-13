@@ -31,6 +31,7 @@ describe('rclone destination', () => {
     expect(args).toContain('--transfers 24');
     expect(args).toContain('--checkers 32');
     expect(args).toContain('--buffer-size 8M');
+    expect(args).toContain('--s3-no-check-bucket');
     expect(args).not.toContain('sync');
     expect(args).not.toContain('delete');
   });

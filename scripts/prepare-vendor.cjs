@@ -46,9 +46,15 @@ function extractZip(archivePath, outputDirectory) {
   const result = process.platform === 'win32'
     ? spawnSync('powershell.exe', [
       '-NoProfile', '-NonInteractive', '-Command',
-      'Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force',
-      archivePath, outputDirectory,
-    ], { stdio: 'inherit' })
+      'Expand-Archive -LiteralPath $env:DAO_RCLONE_ARCHIVE_PATH -DestinationPath $env:DAO_RCLONE_OUTPUT_DIRECTORY -Force',
+    ], {
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        DAO_RCLONE_ARCHIVE_PATH: archivePath,
+        DAO_RCLONE_OUTPUT_DIRECTORY: outputDirectory,
+      },
+    })
     : spawnSync('/usr/bin/unzip', ['-q', archivePath, '-d', outputDirectory], { stdio: 'inherit' });
   if (result.status !== 0) throw new Error('Không thể giải nén rclone.');
 }

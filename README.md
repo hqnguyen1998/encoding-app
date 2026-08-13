@@ -19,7 +19,7 @@
 - Ba mức tốc độ upload rclone: **Ổn định** 8 luồng, **Nhanh** 24 luồng (mặc định) và **Tối đa** 32 luồng; lựa chọn được tự lưu trên máy.
 - Có thể tự thêm kết quả vào upload queue sau mỗi lần encode; upload chỉ bắt đầu khi toàn bộ encode queue đã kết thúc.
 - App hiển thị nút **Copy URL** ngay tại URL xem trước; sau khi upload thành công cũng xuất URL public tới `master.m3u8` cho từng mục, hỗ trợ sao chép và mở URL.
-- Tạo/cập nhật remote Cloudflare R2, Amazon S3 hoặc S3 tương thích ngay trong app. Secret được rclone làm mờ trước khi lưu vào `rclone.conf`, không xuất hiện trong tham số tiến trình hoặc log.
+- Tạo/cập nhật remote Cloudflare R2, Amazon S3 hoặc S3 tương thích ngay trong app. Secret được lưu theo định dạng S3 mà rclone yêu cầu trong `rclone.conf`, không xuất hiện trong tham số tiến trình hoặc log.
 - Tự lưu và khôi phục tab, cấu hình encode, tùy chọn nâng cao, thư mục đầu ra, remote, đường dẫn upload, URL CDN và auto-upload. Secret Key không được ghi dạng plaintext vào localStorage.
 - Liệt kê subtitle nhúng theo đúng stream index, codec, ngôn ngữ, tiêu đề và cờ default/forced.
 - Chọn một hoặc nhiều subtitle track và xuất hàng loạt; SRT/ASS/WebVTT được giữ nguyên, `mov_text` chuyển sang SRT, PGS xuất SUP và subtitle ảnh khác xuất MKS.

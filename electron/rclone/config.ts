@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process';
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type {
@@ -52,10 +51,8 @@ export function validateRcloneRemoteConfig(config: RcloneRemoteConfig): RcloneRe
 export function upsertRcloneConfig(
   existing: string,
   config: RcloneRemoteConfig,
-  obscuredSecret: string,
 ): string {
   const safe = validateRcloneRemoteConfig(config);
-  const secret = assertSingleLine(obscuredSecret, 'Secret đã mã hóa');
   const lines = existing.replace(/\r\n/g, '\n').split('\n');
   const sectionStart = lines.findIndex((line) => line.trim() === `[${safe.name}]`);
   if (sectionStart >= 0) {
@@ -71,9 +68,13 @@ export function upsertRcloneConfig(
     `provider = ${safe.provider}`,
     'env_auth = false',
     `access_key_id = ${safe.accessKeyId}`,
-    `secret_access_key = ${secret}`,
+    // Unlike password-typed backend fields, S3 secret_access_key is consumed
+    // verbatim by rclone. Obscuring it makes rclone sign requests with the
+    // obscured string and R2 responds with SignatureDoesNotMatch.
+    `secret_access_key = ${safe.secretAccessKey}`,
     `region = ${safe.region}`,
     ...(safe.endpoint ? [`endpoint = ${safe.endpoint}`] : []),
+    ...(safe.provider === 'Cloudflare' ? ['no_check_bucket = true'] : []),
   ];
   return `${[...lines, ...(lines.length ? [''] : []), ...section].join('\n')}\n`;
 }
@@ -83,45 +84,6 @@ export function parseRcloneConfigPath(output: string): string {
   const filePath = candidates.at(-1)?.replace(/^['"]|['"]$/g, '') ?? '';
   if (!filePath || filePath.includes('\0')) throw new Error('Không xác định được vị trí rclone.conf.');
   return filePath;
-}
-
-function obscureSecret(rclonePath: string, secret: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(rclonePath, ['obscure', '-'], {
-      windowsHide: true,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      if (!settled) {
-        settled = true;
-        reject(new Error('Rclone không thể bảo vệ Secret Access Key trong thời gian cho phép.'));
-      }
-    }, 10_000);
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => { stdout += chunk; });
-    child.stderr.on('data', (chunk: string) => { stderr += chunk; });
-    child.on('error', () => {
-      clearTimeout(timer);
-      if (!settled) {
-        settled = true;
-        reject(new Error('Không thể chạy rclone để bảo vệ Secret Access Key.'));
-      }
-    });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      if (settled) return;
-      settled = true;
-      const value = stdout.trim();
-      if (code === 0 && value && !/[\r\n]/.test(value)) resolve(value);
-      else reject(new Error(stderr.trim() ? 'Rclone từ chối làm mờ Secret Access Key.' : 'Không thể bảo vệ Secret Access Key bằng rclone.'));
-    });
-    child.stdin.end(`${secret}\n`);
-  });
 }
 
 export async function saveRcloneRemote(config: RcloneRemoteConfig): Promise<RcloneRemoteConfigResult> {
@@ -141,8 +103,7 @@ export async function saveRcloneRemote(config: RcloneRemoteConfig): Promise<Rclo
     throw new Error('rclone.conf đang được mã hóa. Ứng dụng có thể dùng remote hiện có nhưng không thể chỉnh sửa file này.');
   }
 
-  const obscuredSecret = await obscureSecret(rclonePath, safe.secretAccessKey);
-  const nextConfig = upsertRcloneConfig(existing, safe, obscuredSecret);
+  const nextConfig = upsertRcloneConfig(existing, safe);
   const configDirectory = path.dirname(configPath);
   const tempPath = path.join(configDirectory, `.rclone.conf.${process.pid}.${Date.now()}.tmp`);
   await mkdir(configDirectory, { recursive: true, mode: 0o700 });
