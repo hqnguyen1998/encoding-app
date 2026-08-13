@@ -62,6 +62,7 @@ export function buildRcloneUploadArgs(config: RcloneUploadConfig): string[] {
     '--checkers', String(performance.checkers),
     '--buffer-size', performance.bufferSize,
     '--fast-list',
+    '--s3-no-check-bucket',
     '--contimeout', '30s',
     '--timeout', '5m',
     '--ask-password=false',

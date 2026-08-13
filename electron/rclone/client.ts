@@ -17,6 +17,20 @@ function lastUsefulLines(value: string): string {
     .join('\n');
 }
 
+export function explainRcloneFailure(stderr: string, stdout: string, code: number | null): string {
+  const details = lastUsefulLines(stderr || stdout);
+  if (/SignatureDoesNotMatch/i.test(details)) {
+    return 'Cloudflare R2 từ chối chữ ký: Access Key ID và Secret Access Key không cùng một token, token đã bị thu hồi, hoặc endpoint thuộc tài khoản khác. Hãy tạo R2 API token mới, rồi nhập lại đúng cặp Access Key ID / Secret Access Key và endpoint S3 API.';
+  }
+  if (/NoSuchBucket/i.test(details)) {
+    return 'Không tìm thấy bucket R2. Hãy kiểm tra tên bucket ở đầu đường dẫn đích.';
+  }
+  if (/AccessDenied/i.test(details)) {
+    return 'R2 từ chối quyền truy cập. Token cần quyền Object Read & Write cho đúng bucket.';
+  }
+  return details || `Rclone đã dừng với mã ${code ?? 'không xác định'}.`;
+}
+
 export function runRcloneCommand(
   rclonePath: string,
   args: string[],
@@ -57,7 +71,7 @@ export function runRcloneCommand(
       if (code === 0) {
         resolve({ stdout, stderr });
       } else {
-        reject(new Error(lastUsefulLines(stderr || stdout) || `Rclone đã dừng với mã ${code ?? 'không xác định'}.`));
+        reject(new Error(explainRcloneFailure(stderr, stdout, code)));
       }
     });
   });
@@ -138,6 +152,7 @@ export async function testRcloneTarget(config: RcloneTargetConfig): Promise<Rclo
       '--timeout', '30s',
       '--retries', '1',
       '--low-level-retries', '1',
+      '--s3-no-check-bucket',
       '--ask-password=false',
     ],
     45_000,

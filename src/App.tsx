@@ -829,7 +829,7 @@ export default function App() {
       region: remoteRegion,
     };
     setRemoteSaveStatus('saving');
-    setRemoteSaveMessage('Đang bảo vệ secret và lưu rclone.conf…');
+    setRemoteSaveMessage('Đang lưu cấu hình rclone…');
     try {
       const result = await window.encoder.saveRcloneRemote(config);
       setRemoteSaveStatus('success');
@@ -2162,7 +2162,7 @@ export default function App() {
                 </div>
                 <div className="remote-save-row">
                   <span className={`remote-save-feedback ${remoteSaveStatus}`}>
-                    {remoteSaveMessage || 'Secret được rclone làm mờ trước khi ghi vào rclone.conf.'}
+                    {remoteSaveMessage || 'Secret được lưu trong rclone.conf với quyền truy cập giới hạn cho tài khoản máy.'}
                   </span>
                   <button type="button" onClick={saveRemote} disabled={!remoteCanSave}>
                     {remoteSaveStatus === 'saving' ? <LoaderCircle className="spin" size={14} /> : <ShieldCheck size={14} />}
