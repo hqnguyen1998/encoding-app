@@ -18,8 +18,8 @@
     "dist": "npm run build && electron-builder",
     "prepare:vendor:mac": "node scripts/prepare-vendor.cjs mac-arm64",
     "prepare:vendor:win": "node scripts/prepare-vendor.cjs win-x64",
-    "dist:mac": "npm run prepare:vendor:mac && npm run build && electron-builder --mac dmg",
-    "dist:win": "npm run prepare:vendor:win && npm run build && electron-builder --win nsis --x64"
+    "dist:mac": "npm run prepare:vendor:mac && npm run build && electron-builder --mac dmg --publish never",
+    "dist:win": "npm run prepare:vendor:win && npm run build && electron-builder --win nsis --x64 --publish never"
   },
   "dependencies": {
     "@ffprobe-installer/ffprobe": "2.1.2",
