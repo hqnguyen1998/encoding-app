@@ -24,6 +24,10 @@ const config: EncodeConfig = {
   segmentDuration: 6,
 };
 
+function commandText(args: string[]): string {
+  return args.join(' ').replaceAll('\\', '/');
+}
+
 describe('safeBaseName', () => {
   it('creates a portable folder name from Vietnamese input', () => {
     expect(safeBaseName('Phim Đẹp Tập 01.mkv')).toBe('Phim-Dep-Tap-01');
@@ -57,7 +61,7 @@ describe('buildEncodeCommand', () => {
       { ...media, videoCodec: 'h264' },
       '/output/movie-copy-hls',
     );
-    const joined = command.args.join(' ');
+    const joined = commandText(command.args);
 
     expect(command.renditions).toHaveLength(1);
     expect(joined).toContain('-map 0:v:0 -map 0:a:0');
@@ -78,7 +82,7 @@ describe('buildEncodeCommand', () => {
 
   it('builds aligned multi-variant HLS with audio', () => {
     const command = buildEncodeCommand(config, media, '/output/movie-hls');
-    const joined = command.args.join(' ');
+    const joined = commandText(command.args);
 
     expect(command.renditions).toHaveLength(3);
     expect(joined).toContain('-var_stream_map v:0,a:0 v:1,a:1 v:2,a:2');
@@ -94,7 +98,7 @@ describe('buildEncodeCommand', () => {
       media,
       '/output/gpu-hls',
     );
-    const joined = command.args.join(' ');
+    const joined = commandText(command.args);
     expect(joined).toContain('-c:v h264_videotoolbox');
     expect(joined).toContain('-allow_sw 0');
     expect(joined).toContain('-b:v:0 6000k');
@@ -133,7 +137,7 @@ describe('buildEncodeCommand', () => {
       media,
       '/output/advanced-hls',
     );
-    const joined = command.args.join(' ');
+    const joined = commandText(command.args);
 
     expect(joined).toContain('yadif=mode=send_frame:parity=auto:deint=interlaced,fps=fps=25,scale=w=1920:h=1080:flags=bicubic');
     expect(joined).toContain('-profile:v high');
@@ -161,7 +165,7 @@ describe('buildEncodeCommand', () => {
       { ...media, videoCodec: 'h264' },
       '/output/copy-fmp4',
     );
-    const joined = command.args.join(' ');
+    const joined = commandText(command.args);
 
     expect(joined).toContain('-c:v copy -c:a aac -ar 44100 -b:a 256k');
     expect(joined).not.toContain('h264_mp4toannexb');
