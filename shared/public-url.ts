@@ -47,3 +47,21 @@ export function buildPublicHlsUrl(config: PublicHlsUrlConfig): string {
   const encodedObjectKey = objectParts.map((part) => encodeURIComponent(part)).join('/');
   return `${baseUrl}/${encodedObjectKey}`;
 }
+
+interface PublicStorageUrlConfig {
+  publicBaseUrl?: string;
+  storagePath: string;
+  appendFile?: string;
+  directory?: boolean;
+}
+
+export function buildPublicStorageUrl(config: PublicStorageUrlConfig): string {
+  const baseUrl = normalizePublicBaseUrl(config.publicBaseUrl ?? '');
+  if (!baseUrl) return '';
+  const storageParts = pathSegments(config.storagePath);
+  if (storageParts.length < 2) return '';
+  const objectParts = [...storageParts.slice(1), ...pathSegments(config.appendFile ?? '')];
+  if (objectParts.length === 0) return '';
+  const encodedObjectKey = objectParts.map((part) => encodeURIComponent(part)).join('/');
+  return `${baseUrl}/${encodedObjectKey}${config.directory && !config.appendFile ? '/' : ''}`;
+}

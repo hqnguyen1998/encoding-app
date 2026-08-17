@@ -48,6 +48,7 @@ describe('app preferences', () => {
         remoteDestinationPath: 'media/hls',
         uploadAfterEncode: true,
         performanceId: 'maximum' as const,
+        cloudStoragePath: 'daophim-files/media',
       },
       remoteDraft: {
         provider: 'Cloudflare' as const,
@@ -81,5 +82,24 @@ describe('app preferences', () => {
 
   it('recovers when storage contains invalid JSON', () => {
     expect(loadAppPreferences(memoryStorage('{not-json'))).toEqual(DEFAULT_APP_PREFERENCES);
+  });
+
+  it('restores the dedicated URL upload tab without persisting a source URL', () => {
+    const storage = memoryStorage();
+    expect(saveAppPreferences(storage, { ...DEFAULT_APP_PREFERENCES, activeTab: 'url-upload' })).toBe(true);
+    const restored = loadAppPreferences(storage);
+    expect(restored.activeTab).toBe('url-upload');
+    expect(JSON.stringify(restored)).not.toContain('m3u8');
+  });
+
+  it('restores the cloud storage manager tab and last safe browsing path', () => {
+    const storage = memoryStorage();
+    const preferences = {
+      ...DEFAULT_APP_PREFERENCES,
+      activeTab: 'storage' as const,
+      upload: { ...DEFAULT_APP_PREFERENCES.upload, cloudStoragePath: 'daophim-files/media/HLS' },
+    };
+    expect(saveAppPreferences(storage, preferences)).toBe(true);
+    expect(loadAppPreferences(storage)).toMatchObject(preferences);
   });
 });

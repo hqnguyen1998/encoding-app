@@ -15,6 +15,26 @@ export interface QueueSummary {
   finished: number;
 }
 
+export interface ParallelQueueState {
+  encodeQueueRunning: boolean;
+  uploadQueueRunning: boolean;
+  activeEncodeItemId: string | null;
+  activeUploadItemId: string | null;
+  sharedBlocker: boolean;
+}
+
+export interface ParallelQueueReadiness {
+  encode: boolean;
+  upload: boolean;
+}
+
+export function getParallelQueueReadiness(state: ParallelQueueState): ParallelQueueReadiness {
+  return {
+    encode: state.encodeQueueRunning && !state.activeEncodeItemId && !state.sharedBlocker,
+    upload: state.uploadQueueRunning && !state.activeUploadItemId && !state.sharedBlocker,
+  };
+}
+
 export function summarizeQueue(items: QueueLikeItem[]): QueueSummary {
   const summary: QueueSummary = {
     total: items.length,

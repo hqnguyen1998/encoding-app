@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  getParallelQueueReadiness,
   nextQueuedItem,
   removeQueueItem,
   summarizeQueue,
@@ -37,5 +38,23 @@ describe('queue helpers', () => {
   it('never removes a running item', () => {
     expect(removeQueueItem(items, 'b').some((item) => item.id === 'b')).toBe(false);
     expect(removeQueueItem(items, 'c').some((item) => item.id === 'c')).toBe(true);
+  });
+
+  it('allows encode and upload queues to advance in parallel', () => {
+    expect(getParallelQueueReadiness({
+      encodeQueueRunning: true,
+      uploadQueueRunning: true,
+      activeEncodeItemId: null,
+      activeUploadItemId: null,
+      sharedBlocker: false,
+    })).toEqual({ encode: true, upload: true });
+
+    expect(getParallelQueueReadiness({
+      encodeQueueRunning: true,
+      uploadQueueRunning: true,
+      activeEncodeItemId: null,
+      activeUploadItemId: 'upload-1',
+      sharedBlocker: false,
+    })).toEqual({ encode: true, upload: false });
   });
 });

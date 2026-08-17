@@ -1,17 +1,34 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
-import { access, mkdir } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   EncodeConfig,
   EncodeEvent,
   EncodeStartResult,
+  CloudStorageCopyConfig,
+  CloudStorageCreateFolderConfig,
+  CloudStorageDeleteConfig,
+  CloudStorageDownloadConfig,
+  CloudStorageMoveConfig,
+  CloudStorageRenameConfig,
+  CloudStorageTargetConfig,
+  CloudStorageUploadFilesConfig,
+  CloudStorageUploadFolderConfig,
   HardwareAccelerationStatus,
+  OnzloadLoginConfig,
+  OnzloadSessionState,
+  OnzloadUploadConfig,
+  OnzloadUploadEvent,
+  OnzloadUploadStartResult,
   RcloneRemoteConfig,
   RcloneRemoteConfigResult,
   RcloneTargetConfig,
   RcloneUploadConfig,
   RcloneUploadEvent,
   RcloneUploadStartResult,
+  RemoteHlsDownloadConfig,
+  RemoteHlsDownloadEvent,
+  RemoteHlsDownloadStartResult,
   SubtitleExportConfig,
   VideoEncoderId,
 } from '../shared/types';
@@ -25,12 +42,31 @@ import { getRclonePath } from './rclone/binary';
 import { inspectRclone, testRcloneTarget } from './rclone/client';
 import { saveRcloneRemote } from './rclone/config';
 import { RcloneUploadJob } from './rclone/upload';
+import {
+  copyCloudStorageEntry,
+  createCloudStorageFolder,
+  deleteCloudStorageEntry,
+  downloadCloudStorageEntry,
+  listCloudStorage,
+  moveCloudStorageEntry,
+  renameCloudStorageEntry,
+  uploadCloudStorageFiles,
+  uploadCloudStorageFolder,
+} from './rclone/storage';
 import { normalizePublicBaseUrl } from '../shared/public-url';
+import { createRemoteHlsDownloadJobId, downloadRemoteHls } from './hls/download';
+import { encodeStartBlocker, uploadStartBlocker } from './pipeline-concurrency';
+import { getOnzloadSessionState, loginOnzload, logoutOnzload } from './onzload/auth';
+import { OnzloadUploadJob } from './onzload/upload';
 
 let mainWindow: BrowserWindow | null = null;
 let activeJob: EncodeJob | null = null;
 let activeUploadJob: RcloneUploadJob | null = null;
+let activeOnzloadUploadJob: OnzloadUploadJob | null = null;
+let activeRemoteHlsDownload: { id: string; controller: AbortController; workspacePath: string } | null = null;
+const remoteHlsWorkspaces = new Map<string, string>();
 let subtitleExportActive = false;
+let cloudStorageMutationActive = false;
 let hardwareAccelerationPromise: Promise<HardwareAccelerationStatus> | null = null;
 
 function getHardwareAccelerationStatus(): Promise<HardwareAccelerationStatus> {
@@ -67,6 +103,27 @@ function sendRcloneUploadEvent(event: RcloneUploadEvent): void {
   mainWindow.webContents.send('rclone-upload:event', event);
 }
 
+function sendOnzloadUploadEvent(event: OnzloadUploadEvent): void {
+  if (event.type === 'completed' || event.type === 'failed' || event.type === 'cancelled') {
+    if (activeOnzloadUploadJob?.id === event.jobId) activeOnzloadUploadJob = null;
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('onzload-upload:event', event);
+}
+
+function sendRemoteHlsDownloadEvent(event: RemoteHlsDownloadEvent): void {
+  const activeDownload = activeRemoteHlsDownload?.id === event.jobId ? activeRemoteHlsDownload : null;
+  if (event.type === 'completed' && activeDownload) {
+    remoteHlsWorkspaces.set(event.result.outputPath, activeDownload.workspacePath);
+  }
+  if (event.type === 'completed' || event.type === 'failed' || event.type === 'cancelled') {
+    if (activeDownload && event.type !== 'completed') void rm(activeDownload.workspacePath, { recursive: true, force: true });
+    if (activeDownload) activeRemoteHlsDownload = null;
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('hls-url-download:event', event);
+}
+
 function assertRcloneTargetConfig(config: unknown): asserts config is RcloneTargetConfig {
   if (!config || typeof config !== 'object') throw new Error('Cấu hình Rclone không hợp lệ.');
   const candidate = config as Record<string, unknown>;
@@ -84,6 +141,18 @@ function assertRcloneTargetConfig(config: unknown): asserts config is RcloneTarg
       throw new Error('URL public không hợp lệ.');
     }
     normalizePublicBaseUrl(candidate.publicBaseUrl);
+  }
+}
+
+async function runCloudStorageMutation<T>(task: () => Promise<T>): Promise<T> {
+  if (cloudStorageMutationActive) throw new Error('Một thao tác cloud storage khác đang chạy.');
+  if (activeUploadJob || activeOnzloadUploadJob) throw new Error('Hãy đợi upload queue hoàn tất trước khi quản lý cloud storage.');
+  if (activeRemoteHlsDownload) throw new Error('Hãy đợi tải HLS từ URL hoàn tất trước khi quản lý cloud storage.');
+  cloudStorageMutationActive = true;
+  try {
+    return await task();
+  } finally {
+    cloudStorageMutationActive = false;
   }
 }
 
@@ -192,6 +261,24 @@ function registerIpc(): void {
     return result.canceled ? null : result.filePaths[0];
   });
 
+  ipcMain.handle('dialog:select-cloud-storage-files', async () => {
+    const result = await dialog.showOpenDialog(mainWindow!, {
+      title: 'Chọn file để upload lên cloud storage',
+      buttonLabel: 'Thêm file',
+      properties: ['openFile', 'multiSelections'],
+    });
+    return result.canceled ? [] : result.filePaths;
+  });
+
+  ipcMain.handle('dialog:select-cloud-storage-folder', async () => {
+    const result = await dialog.showOpenDialog(mainWindow!, {
+      title: 'Chọn thư mục để upload lên cloud storage',
+      buttonLabel: 'Chọn thư mục',
+      properties: ['openDirectory'],
+    });
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  });
+
   ipcMain.handle('media:probe', async (_event, filePath: unknown) => {
     if (typeof filePath !== 'string' || !filePath) throw new Error('Đường dẫn video không hợp lệ.');
     return probeMedia(getFfprobePath(), filePath);
@@ -224,9 +311,14 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('encode:start', async (_event, config: EncodeConfig): Promise<EncodeStartResult> => {
-    if (activeJob) throw new Error('Một tác vụ encode khác đang chạy.');
-    if (activeUploadJob) throw new Error('Hãy đợi upload R2/S3 hoàn tất trước khi encode.');
-    if (subtitleExportActive) throw new Error('Hãy đợi tác vụ xuất subtitle hoàn tất trước khi encode.');
+    const startBlocker = encodeStartBlocker({
+      encodeActive: Boolean(activeJob),
+      uploadActive: Boolean(activeUploadJob || activeOnzloadUploadJob),
+      remoteHlsDownloadActive: Boolean(activeRemoteHlsDownload),
+      subtitleExportActive,
+      cloudStorageMutationActive,
+    });
+    if (startBlocker) throw new Error(startBlocker);
     if (!config || typeof config.inputPath !== 'string' || typeof config.outputDirectory !== 'string') {
       throw new Error('Cấu hình encode không hợp lệ.');
     }
@@ -295,7 +387,8 @@ function registerIpc(): void {
   ipcMain.handle('rclone:status', () => inspectRclone());
 
   ipcMain.handle('rclone:save-remote', async (_event, config: RcloneRemoteConfig): Promise<RcloneRemoteConfigResult> => {
-    if (activeUploadJob) throw new Error('Hãy đợi upload hoàn tất trước khi thay đổi cấu hình rclone.');
+    if (activeUploadJob || activeOnzloadUploadJob) throw new Error('Hãy đợi upload hoàn tất trước khi thay đổi cấu hình rclone.');
+    if (cloudStorageMutationActive) throw new Error('Hãy đợi thao tác cloud storage hoàn tất trước khi thay đổi cấu hình rclone.');
     return saveRcloneRemote(config);
   });
 
@@ -316,9 +409,14 @@ function registerIpc(): void {
     ) {
       throw new Error('Cấu hình tốc độ upload không hợp lệ.');
     }
-    if (activeJob) throw new Error('Hãy đợi encode hoàn tất trước khi upload.');
-    if (subtitleExportActive) throw new Error('Hãy đợi xuất subtitle hoàn tất trước khi upload.');
-    if (activeUploadJob) throw new Error('Một tác vụ upload khác đang chạy.');
+    const startBlocker = uploadStartBlocker({
+      encodeActive: Boolean(activeJob),
+      uploadActive: Boolean(activeUploadJob || activeOnzloadUploadJob),
+      remoteHlsDownloadActive: Boolean(activeRemoteHlsDownload),
+      subtitleExportActive,
+      cloudStorageMutationActive,
+    });
+    if (startBlocker) throw new Error(startBlocker);
 
     const rcloneStatus = await inspectRclone();
     if (!rcloneStatus.available) throw new Error(rcloneStatus.message);
@@ -342,6 +440,170 @@ function registerIpc(): void {
   ipcMain.handle('rclone:cancel-upload', (_event, jobId: unknown) => {
     if (typeof jobId !== 'string' || activeUploadJob?.id !== jobId) return false;
     return activeUploadJob.cancel();
+  });
+
+  ipcMain.handle('onzload:session', (): Promise<OnzloadSessionState> => getOnzloadSessionState(true));
+
+  ipcMain.handle('onzload:login', async (_event, config: unknown): Promise<OnzloadSessionState> => {
+    if (!config || typeof config !== 'object' || typeof (config as OnzloadLoginConfig).baseUrl !== 'string') {
+      throw new Error('Địa chỉ OnzLoad không hợp lệ.');
+    }
+    return loginOnzload(config as OnzloadLoginConfig);
+  });
+
+  ipcMain.handle('onzload:logout', async (): Promise<OnzloadSessionState> => {
+    if (activeOnzloadUploadJob) throw new Error('Hãy đợi hoặc hủy upload OnzLoad trước khi đăng xuất.');
+    return logoutOnzload();
+  });
+
+  ipcMain.handle('onzload:upload', async (_event, config: unknown): Promise<OnzloadUploadStartResult> => {
+    if (!config || typeof config !== 'object') throw new Error('Cấu hình upload OnzLoad không hợp lệ.');
+    const candidate = config as OnzloadUploadConfig;
+    if (
+      typeof candidate.sourcePath !== 'string' ||
+      !candidate.sourcePath ||
+      candidate.sourcePath.length > 4_000 ||
+      typeof candidate.idempotencyKey !== 'string' ||
+      !/^[A-Za-z0-9._:-]{16,128}$/.test(candidate.idempotencyKey) ||
+      ![2, 4, 6, 10].includes(candidate.segmentDuration) ||
+      (candidate.performanceId !== undefined && !['stable', 'fast', 'maximum'].includes(candidate.performanceId))
+    ) {
+      throw new Error('Thông tin upload OnzLoad không hợp lệ.');
+    }
+    const startBlocker = uploadStartBlocker({
+      encodeActive: Boolean(activeJob),
+      uploadActive: Boolean(activeUploadJob || activeOnzloadUploadJob),
+      remoteHlsDownloadActive: Boolean(activeRemoteHlsDownload),
+      subtitleExportActive,
+      cloudStorageMutationActive,
+    });
+    if (startBlocker) throw new Error(startBlocker);
+    const rclonePath = await getRclonePath();
+    if (!rclonePath) throw new Error('Không tìm thấy rclone đi kèm ứng dụng.');
+
+    const job = new OnzloadUploadJob(rclonePath, candidate, sendOnzloadUploadEvent);
+    activeOnzloadUploadJob = job;
+    try {
+      await job.start();
+    } catch (error) {
+      if (activeOnzloadUploadJob?.id === job.id) activeOnzloadUploadJob = null;
+      throw error;
+    }
+    return { jobId: job.id };
+  });
+
+  ipcMain.handle('onzload:cancel-upload', (_event, jobId: unknown) => {
+    if (typeof jobId !== 'string' || activeOnzloadUploadJob?.id !== jobId) return false;
+    return activeOnzloadUploadJob.cancel();
+  });
+
+  ipcMain.handle('cloud-storage:list', async (_event, config: unknown) => {
+    return listCloudStorage(config as CloudStorageTargetConfig);
+  });
+
+  ipcMain.handle('cloud-storage:create-folder', async (_event, config: unknown) => {
+    return runCloudStorageMutation(() => createCloudStorageFolder(config as CloudStorageCreateFolderConfig));
+  });
+
+  ipcMain.handle('cloud-storage:upload-files', async (_event, config: unknown) => {
+    return runCloudStorageMutation(() => uploadCloudStorageFiles(config as CloudStorageUploadFilesConfig));
+  });
+
+  ipcMain.handle('cloud-storage:upload-folder', async (_event, config: unknown) => {
+    return runCloudStorageMutation(() => uploadCloudStorageFolder(config as CloudStorageUploadFolderConfig));
+  });
+
+  ipcMain.handle('cloud-storage:rename', async (_event, config: unknown) => {
+    return runCloudStorageMutation(() => renameCloudStorageEntry(config as CloudStorageRenameConfig));
+  });
+
+  ipcMain.handle('cloud-storage:copy', async (_event, config: unknown) => {
+    return runCloudStorageMutation(() => copyCloudStorageEntry(config as CloudStorageCopyConfig));
+  });
+
+  ipcMain.handle('cloud-storage:move', async (_event, config: unknown) => {
+    return runCloudStorageMutation(() => moveCloudStorageEntry(config as CloudStorageMoveConfig));
+  });
+
+  ipcMain.handle('cloud-storage:delete', async (_event, config: unknown) => {
+    return runCloudStorageMutation(() => deleteCloudStorageEntry(config as CloudStorageDeleteConfig));
+  });
+
+  ipcMain.handle('cloud-storage:download', async (_event, config: unknown) => {
+    const candidate = config as CloudStorageDownloadConfig;
+    if (!candidate || typeof candidate !== 'object' || typeof candidate.name !== 'string') {
+      throw new Error('Mục cloud storage cần tải không hợp lệ.');
+    }
+    if (candidate.isDirectory) {
+      const result = await dialog.showOpenDialog(mainWindow!, {
+        title: `Chọn nơi lưu thư mục ${candidate.name}`,
+        buttonLabel: 'Tải xuống đây',
+        properties: ['openDirectory', 'createDirectory'],
+      });
+      if (result.canceled || !result.filePaths[0]) return null;
+      const localPath = path.join(result.filePaths[0], candidate.name);
+      return runCloudStorageMutation(() => downloadCloudStorageEntry({ ...candidate, localPath }));
+    }
+    const result = await dialog.showSaveDialog(mainWindow!, {
+      title: `Lưu ${candidate.name}`,
+      defaultPath: candidate.name,
+      buttonLabel: 'Tải xuống',
+    });
+    if (result.canceled || !result.filePath) return null;
+    return runCloudStorageMutation(() => downloadCloudStorageEntry({ ...candidate, localPath: result.filePath! }));
+  });
+
+  ipcMain.handle('hls-url:download', async (_event, config: unknown): Promise<RemoteHlsDownloadStartResult> => {
+    if (!config || typeof config !== 'object') throw new Error('Cấu hình URL HLS không hợp lệ.');
+    const candidate = config as RemoteHlsDownloadConfig;
+    if (typeof candidate.url !== 'string' || !candidate.url.trim() || candidate.url.length > 8_000) {
+      throw new Error('URL HLS không hợp lệ.');
+    }
+    if (candidate.folderName !== undefined && (typeof candidate.folderName !== 'string' || candidate.folderName.length > 80)) {
+      throw new Error('Tên thư mục HLS không hợp lệ.');
+    }
+    if (activeRemoteHlsDownload) throw new Error('Một URL HLS khác đang được tải.');
+    if (activeJob) throw new Error('Hãy đợi encode hoàn tất trước khi tải HLS từ URL.');
+    if (cloudStorageMutationActive) throw new Error('Hãy đợi thao tác cloud storage hoàn tất trước khi tải HLS từ URL.');
+
+    const downloadsRoot = path.join(app.getPath('temp'), 'dao-phim-hls-url');
+    await mkdir(downloadsRoot, { recursive: true });
+    const workspacePath = await mkdtemp(path.join(downloadsRoot, 'import-'));
+    const id = createRemoteHlsDownloadJobId();
+    const controller = new AbortController();
+    activeRemoteHlsDownload = { id, controller, workspacePath };
+    sendRemoteHlsDownloadEvent({ type: 'started', jobId: id });
+
+    void downloadRemoteHls(candidate, {
+      outputParentDirectory: workspacePath,
+      signal: controller.signal,
+      onProgress: (progress) => sendRemoteHlsDownloadEvent({ type: 'progress', jobId: id, progress }),
+    }).then((result) => {
+      sendRemoteHlsDownloadEvent({ type: 'completed', jobId: id, result });
+    }).catch((error: unknown) => {
+      if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
+        sendRemoteHlsDownloadEvent({ type: 'cancelled', jobId: id });
+        return;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      sendRemoteHlsDownloadEvent({ type: 'failed', jobId: id, message });
+    });
+    return { jobId: id };
+  });
+
+  ipcMain.handle('hls-url:cancel', (_event, jobId: unknown) => {
+    if (typeof jobId !== 'string' || activeRemoteHlsDownload?.id !== jobId) return false;
+    activeRemoteHlsDownload.controller.abort();
+    return true;
+  });
+
+  ipcMain.handle('hls-url:cleanup', async (_event, outputPath: unknown) => {
+    if (typeof outputPath !== 'string' || !outputPath) return false;
+    const workspacePath = remoteHlsWorkspaces.get(outputPath);
+    if (!workspacePath) return false;
+    await rm(workspacePath, { recursive: true, force: true });
+    remoteHlsWorkspaces.delete(outputPath);
+    return true;
   });
 
   ipcMain.handle('shell:reveal', async (_event, targetPath: unknown) => {
@@ -374,6 +636,9 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   activeJob?.cancel();
   activeUploadJob?.cancel();
+  activeOnzloadUploadJob?.cancel();
+  activeRemoteHlsDownload?.controller.abort();
+  for (const workspacePath of remoteHlsWorkspaces.values()) void rm(workspacePath, { recursive: true, force: true });
 });
 
 app.on('window-all-closed', () => {

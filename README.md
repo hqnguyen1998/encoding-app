@@ -16,8 +16,11 @@
 - Đóng logo PNG/JPG/WebP/BMP lên video với vị trí, kích thước, độ trong suốt và lề tùy chỉnh; áp dụng đồng nhất lên mọi rendition HLS và tự lưu cấu hình.
 - Tùy chỉnh AAC bitrate, số kênh, sample rate; chọn segment MPEG-TS `.ts` hoặc fragmented MP4 `.m4s` và số thứ tự segment bắt đầu.
 - Tab **Upload R2 / S3** riêng để chọn nhiều thư mục HLS local, upload tuần tự theo queue, kiểm tra kết nối và theo dõi byte/tốc độ/ETA.
+- Liên kết trực tiếp tài khoản **OnzLoad** qua trình duyệt và PKCE; app có thể tự upload HLS sau mỗi encode, tạo video/job trong OnzLoad và trả về link embed mà không lưu khóa storage chính trên máy người dùng.
+- Tab **Upload URL HLS** riêng: nhập nhiều URL `.m3u8`, mỗi dòng một link (kể cả URL ký bằng token); khi người dùng bấm Upload, app tải playlist con, segment, init file và key theo đúng cây thư mục, đổi playlist gốc thành `master.m3u8`, rồi upload cuốn chiếu từng link trong khi link kế tiếp tiếp tục tải.
+- Tab **Cloud Storage** duyệt trực tiếp toàn bộ bucket/path bằng rclone; hỗ trợ tạo thư mục, upload file/thư mục, đổi tên, sao chép, di chuyển, tải xuống, xóa hai bước, lọc object và copy URL public/HLS.
 - Ba mức tốc độ upload rclone: **Ổn định** 8 luồng, **Nhanh** 24 luồng (mặc định) và **Tối đa** 32 luồng; lựa chọn được tự lưu trên máy.
-- Có thể tự thêm kết quả vào upload queue sau mỗi lần encode; upload chỉ bắt đầu khi toàn bộ encode queue đã kết thúc.
+- Có thể tự thêm kết quả vào upload queue sau mỗi lần encode; video vừa xong được upload ngay trong lúc encode queue tiếp tục xử lý video kế tiếp.
 - App hiển thị nút **Copy URL** ngay tại URL xem trước; sau khi upload thành công cũng xuất URL public tới `master.m3u8` cho từng mục, hỗ trợ sao chép và mở URL.
 - Tạo/cập nhật remote Cloudflare R2, Amazon S3 hoặc S3 tương thích ngay trong app. Secret được rclone làm mờ trước khi lưu vào `rclone.conf`, không xuất hiện trong tham số tiến trình hoặc log.
 - Tự lưu và khôi phục tab, cấu hình encode, tùy chọn nâng cao, thư mục đầu ra, remote, đường dẫn upload, URL CDN và auto-upload. Secret Key không được ghi dạng plaintext vào localStorage.
@@ -73,9 +76,23 @@ Nếu `rclone.conf` được mã hóa toàn bộ, app vẫn dùng được remot
 
 Upload dùng `rclone copy`, không dùng `sync`: file ở đích không có trong thư mục local sẽ không bị xóa. Sau upload, thư mục HLS local cũng được giữ nguyên.
 
+## Liên kết OnzLoad
+
+Trong tab **Upload R2 / S3**, nhập `https://onzload.com` và bấm **Đăng nhập**. Trình duyệt sẽ yêu cầu người dùng xác nhận thiết bị; sau callback PKCE, token thiết bị được mã hóa bằng kho khóa của hệ điều hành. Khi upload, OnzLoad chỉ cấp credential R2 ngắn hạn, giới hạn trong đúng prefix của video đang tạo. Encoder không nhận khóa storage chính và không kết nối trực tiếp PostgreSQL/Prisma.
+
+Bật **Tự upload và tạo video sau mỗi encode** để đầu ra được chuẩn hóa H.264/yuv420p + AAC-LC stereo 48 kHz, upload ngay sau khi encode xong, rồi để OnzLoad xác minh toàn bộ playlist/segment trước khi đánh dấu video và encode job hoàn tất.
+
+Với tab **Upload URL HLS**, chọn remote/bucket đích, nhập tùy chọn tên folder storage rồi dán một hoặc nhiều URL, mỗi dòng một playlist. App chỉ chạy khi người dùng chủ động bấm Upload. Ngay khi một link tải xong, thư mục tạm của link đó được đưa vào rclone upload trong lúc downloader tiếp tục link kế tiếp; URL public xuất hiện ngay khi từng mục upload thành công, không cần chờ cả batch. URL/token chỉ nằm trong bộ nhớ khi tải, không được lưu vào localStorage, tên file hoặc log. App dùng một thư mục tạm để giữ nguyên quan hệ giữa master playlist, child playlist, segment, init file và key; bản tạm này tự xóa sau khi upload thành công, khi hủy batch, khi xóa item khỏi queue hoặc khi thoát app. Nếu tải hay upload lỗi, item và bản tạm được giữ đến khi thử lại hoặc thoát app.
+
 Với HLS có nhiều segment nhỏ, mức **Nhanh** chạy 24 file song song, 32 checkers và buffer 8 MiB mỗi transfer. Mức **Tối đa** chạy 32 file song song và 64 checkers, phù hợp mạng upload nhanh; nếu gặp lỗi timeout/429 hoặc máy thiếu RAM, chuyển về **Nhanh** hoặc **Ổn định**. Cấu hình được chụp riêng cho từng item khi bắt đầu queue.
 
 Để app xuất URL phát HLS, nhập **URL public / CDN của bucket** ở phần đích upload, ví dụ `https://cdn.daophim.space`. Đây phải là custom domain gắn trực tiếp với bucket hoặc URL `r2.dev` đã bật public access, không phải endpoint API `*.r2.cloudflarestorage.com`. App tự bỏ tên bucket khỏi đường dẫn rclone và ghép object key tới `master.m3u8`; cấu hình này được ghi nhớ riêng theo từng remote trên máy.
+
+## Quản lý Cloud Storage
+
+Tab **Cloud Storage** dùng các remote rclone đã cấu hình để duyệt R2, S3 và dịch vụ S3 tương thích. Đường dẫn nhập theo dạng `ten-bucket/thu-muc`; nếu token chỉ có quyền trên một bucket và không được phép liệt kê gốc remote, hãy nhập thẳng tên bucket. Object storage dùng thư mục ảo nên app tạo file `.keep` ẩn cho thư mục trống và không hiển thị marker này trong danh sách.
+
+Đổi tên, sao chép và di chuyển đều kiểm tra đường dẫn đích trước khi chạy, không ghi đè object có sẵn. Di chuyển/xóa thư mục không cho phép chọn gốc remote; xóa cần xác nhận hai bước và sẽ xóa vĩnh viễn mọi object con. Các thao tác thay đổi cloud storage, upload queue và tải URL HLS được khóa tuần tự để tránh nhiều tiến trình rclone sửa cùng một đích.
 
 ## Tạo bộ cài
 
@@ -87,7 +104,7 @@ Trên macOS:
 npm run dist:mac
 ```
 
-Kết quả nằm trong `release/Dao-Phim-Encoding-0.11.0-arm64.dmg` hoặc bản kiến trúc tương ứng với máy build.
+Kết quả nằm trong `release/Dao-Phim-Encoding-0.14.0-arm64.dmg` hoặc bản kiến trúc tương ứng với máy build.
 
 Trên Windows x64:
 
@@ -96,7 +113,7 @@ npm ci
 npm run dist:win
 ```
 
-Kết quả nằm trong `release/Dao-Phim-Encoding-Setup-0.11.0-x64.exe`. Windows installer nên được build trên Windows để dependency FFmpeg/ffprobe đúng nền tảng. Workflow `.github/workflows/build-installers.yml` có thể tạo cả hai artifact khi chạy thủ công hoặc push tag `v*`.
+Kết quả nằm trong `release/Dao-Phim-Encoding-Setup-0.14.0-x64.exe`. Windows installer nên được build trên Windows để dependency FFmpeg/ffprobe đúng nền tảng. Workflow `.github/workflows/build-installers.yml` tạo cả hai artifact; khi push tag `v*`, workflow cũng phát hành GitHub Release kèm checksum SHA-256.
 
 ## Cấu trúc output
 

@@ -19,7 +19,7 @@ export interface StorageLike {
 
 export interface AppPreferences {
   version: 1;
-  activeTab: 'encode' | 'upload';
+  activeTab: 'encode' | 'upload' | 'url-upload' | 'storage';
   encode: {
     outputDirectory: string;
     presetId: PresetId;
@@ -35,6 +35,7 @@ export interface AppPreferences {
     remoteDestinationPath: string;
     uploadAfterEncode: boolean;
     performanceId: RcloneUploadPerformanceId;
+    cloudStoragePath: string;
   };
   remoteDraft: {
     provider: RcloneProvider;
@@ -63,6 +64,7 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
     remoteDestinationPath: '',
     uploadAfterEncode: false,
     performanceId: 'fast',
+    cloudStoragePath: '',
   },
   remoteDraft: {
     provider: 'Cloudflare',
@@ -98,7 +100,7 @@ function parsePreferences(value: unknown): AppPreferences {
 
   return {
     version: 1,
-    activeTab: oneOf(root.activeTab, ['encode', 'upload'], DEFAULT_APP_PREFERENCES.activeTab),
+    activeTab: oneOf(root.activeTab, ['encode', 'upload', 'url-upload', 'storage'], DEFAULT_APP_PREFERENCES.activeTab),
     encode: {
       outputDirectory: stringValue(encode.outputDirectory, '', 2_000),
       presetId: oneOf(
@@ -122,6 +124,7 @@ function parsePreferences(value: unknown): AppPreferences {
       remoteDestinationPath: stringValue(upload.remoteDestinationPath, '', 1_000),
       uploadAfterEncode: upload.uploadAfterEncode === true,
       performanceId: oneOf(upload.performanceId, ['stable', 'fast', 'maximum'], DEFAULT_APP_PREFERENCES.upload.performanceId),
+      cloudStoragePath: stringValue(upload.cloudStoragePath, '', 2_000),
     },
     remoteDraft: {
       provider: oneOf(remoteDraft.provider, ['Cloudflare', 'AWS', 'Other'], DEFAULT_APP_PREFERENCES.remoteDraft.provider),

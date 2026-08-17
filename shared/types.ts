@@ -180,6 +180,167 @@ export interface RcloneUploadProgress {
   totalFiles: number;
 }
 
+export interface OnzloadUser {
+  id: string;
+  email: string;
+  displayName: string | null;
+  plan: string;
+  role: string;
+  status: string;
+}
+
+export interface OnzloadCapabilities {
+  hls: {
+    videoCodec: string;
+    pixelFormat: string;
+    audioCodec: string;
+    audioProfile: string;
+    audioChannels: number;
+    audioSampleRate: number;
+    playlistName: string;
+    allowedSegmentDurations: number[];
+    allowedSegmentTypes: HlsSegmentType[];
+  };
+  upload: {
+    maxFileSizeBytes: number;
+    maxFileSizeLabel: string;
+    dailyUploadLimit: number | null;
+  };
+}
+
+export interface OnzloadSessionState {
+  connected: boolean;
+  baseUrl: string | null;
+  expiresAt: string | null;
+  user: OnzloadUser | null;
+  capabilities: OnzloadCapabilities | null;
+  message: string;
+}
+
+export interface OnzloadLoginConfig {
+  baseUrl: string;
+}
+
+export interface OnzloadUploadConfig {
+  sourcePath: string;
+  originalName?: string;
+  idempotencyKey: string;
+  segmentDuration: number;
+  performanceId?: RcloneUploadPerformanceId;
+  albumId?: string;
+}
+
+export interface OnzloadUploadStartResult {
+  jobId: string;
+}
+
+export interface OnzloadUploadResult {
+  uploadId: string;
+  assetId: string;
+  encodeJobId: string;
+  embedUrl: string;
+}
+
+export type OnzloadUploadEvent =
+  | { type: 'started'; jobId: string; uploadId: string; destination: string }
+  | { type: 'progress'; jobId: string; progress: RcloneUploadProgress }
+  | { type: 'log'; jobId: string; line: string }
+  | { type: 'completed'; jobId: string; result: OnzloadUploadResult }
+  | { type: 'cancelled'; jobId: string }
+  | { type: 'failed'; jobId: string; message: string };
+
+export interface RemoteHlsDownloadConfig {
+  url: string;
+  folderName?: string;
+}
+
+export interface RemoteHlsDownloadStartResult {
+  jobId: string;
+}
+
+export interface RemoteHlsDownloadResult {
+  outputPath: string;
+  rootPlaylistPath: string;
+  fileCount: number;
+  totalBytes: number;
+}
+
+export interface RemoteHlsDownloadProgress {
+  completedFiles: number;
+  discoveredFiles: number;
+  bytes: number;
+  statusText: string;
+}
+
+export interface CloudStorageEntry {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  size: number;
+  modTime: string;
+  mimeType: string;
+}
+
+export interface CloudStorageTargetConfig {
+  remoteName: string;
+  path: string;
+}
+
+export interface CloudStorageListResult {
+  remoteName: string;
+  path: string;
+  entries: CloudStorageEntry[];
+}
+
+export interface CloudStorageCreateFolderConfig extends CloudStorageTargetConfig {
+  name: string;
+}
+
+export interface CloudStorageUploadFilesConfig extends CloudStorageTargetConfig {
+  sourcePaths: string[];
+}
+
+export interface CloudStorageUploadFolderConfig extends CloudStorageTargetConfig {
+  sourcePath: string;
+}
+
+export interface CloudStorageRenameConfig extends CloudStorageTargetConfig {
+  isDirectory: boolean;
+  newName: string;
+}
+
+export interface CloudStorageCopyConfig extends CloudStorageTargetConfig {
+  destinationPath: string;
+  isDirectory: boolean;
+}
+
+export interface CloudStorageMoveConfig extends CloudStorageTargetConfig {
+  destinationPath: string;
+  isDirectory: boolean;
+}
+
+export interface CloudStorageDeleteConfig extends CloudStorageTargetConfig {
+  isDirectory: boolean;
+}
+
+export interface CloudStorageDownloadConfig extends CloudStorageTargetConfig {
+  isDirectory: boolean;
+  name: string;
+}
+
+export interface CloudStorageOperationResult {
+  message: string;
+  path: string;
+  localPath?: string;
+}
+
+export type RemoteHlsDownloadEvent =
+  | { type: 'started'; jobId: string }
+  | { type: 'progress'; jobId: string; progress: RemoteHlsDownloadProgress }
+  | { type: 'completed'; jobId: string; result: RemoteHlsDownloadResult }
+  | { type: 'cancelled'; jobId: string }
+  | { type: 'failed'; jobId: string; message: string };
+
 export type RcloneUploadEvent =
   | { type: 'started'; jobId: string; destination: string }
   | { type: 'progress'; jobId: string; progress: RcloneUploadProgress }
@@ -215,9 +376,30 @@ export interface EncoderApi {
   testRcloneTarget: (config: RcloneTargetConfig) => Promise<RcloneTargetResult>;
   startRcloneUpload: (config: RcloneUploadConfig) => Promise<RcloneUploadStartResult>;
   cancelRcloneUpload: (jobId: string) => Promise<boolean>;
+  getOnzloadSession: () => Promise<OnzloadSessionState>;
+  loginOnzload: (config: OnzloadLoginConfig) => Promise<OnzloadSessionState>;
+  logoutOnzload: () => Promise<OnzloadSessionState>;
+  startOnzloadUpload: (config: OnzloadUploadConfig) => Promise<OnzloadUploadStartResult>;
+  cancelOnzloadUpload: (jobId: string) => Promise<boolean>;
+  startRemoteHlsDownload: (config: RemoteHlsDownloadConfig) => Promise<RemoteHlsDownloadStartResult>;
+  cancelRemoteHlsDownload: (jobId: string) => Promise<boolean>;
+  cleanupRemoteHlsDownload: (outputPath: string) => Promise<boolean>;
+  selectCloudStorageFiles: () => Promise<string[]>;
+  selectCloudStorageFolder: () => Promise<string | null>;
+  listCloudStorage: (config: CloudStorageTargetConfig) => Promise<CloudStorageListResult>;
+  createCloudStorageFolder: (config: CloudStorageCreateFolderConfig) => Promise<CloudStorageOperationResult>;
+  uploadCloudStorageFiles: (config: CloudStorageUploadFilesConfig) => Promise<CloudStorageOperationResult>;
+  uploadCloudStorageFolder: (config: CloudStorageUploadFolderConfig) => Promise<CloudStorageOperationResult>;
+  renameCloudStorageEntry: (config: CloudStorageRenameConfig) => Promise<CloudStorageOperationResult>;
+  copyCloudStorageEntry: (config: CloudStorageCopyConfig) => Promise<CloudStorageOperationResult>;
+  moveCloudStorageEntry: (config: CloudStorageMoveConfig) => Promise<CloudStorageOperationResult>;
+  deleteCloudStorageEntry: (config: CloudStorageDeleteConfig) => Promise<CloudStorageOperationResult>;
+  downloadCloudStorageEntry: (config: CloudStorageDownloadConfig) => Promise<CloudStorageOperationResult | null>;
   revealInFolder: (targetPath: string) => Promise<void>;
   copyText: (text: string) => Promise<void>;
   openExternal: (url: string) => Promise<void>;
   onEncodeEvent: (listener: (event: EncodeEvent) => void) => () => void;
   onRcloneUploadEvent: (listener: (event: RcloneUploadEvent) => void) => () => void;
+  onOnzloadUploadEvent: (listener: (event: OnzloadUploadEvent) => void) => () => void;
+  onRemoteHlsDownloadEvent: (listener: (event: RemoteHlsDownloadEvent) => void) => () => void;
 }
