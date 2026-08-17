@@ -1,6 +1,6 @@
 # Đảo Phim Encoding
 
-Ứng dụng desktop encode video thành HLS trên macOS và Windows. Encode diễn ra cục bộ bằng FFmpeg; upload lên R2/S3 chỉ chạy khi người dùng chủ động bật hoặc bắt đầu tác vụ.
+Ứng dụng desktop encode video thành HLS trên macOS và Windows. Encode diễn ra cục bộ bằng FFmpeg; kết quả được upload và tạo video thông qua tài khoản OnzLoad.
 
 ## Chức năng hiện có
 
@@ -15,15 +15,11 @@
 - Bảng **Cấu hình nâng cao** cho phép chỉnh bitrate video theo preset, CRF x264, H.264 profile, FPS, khoảng keyframe, thuật toán scale và khử interlace YADIF.
 - Đóng logo PNG/JPG/WebP/BMP lên video với vị trí, kích thước, độ trong suốt và lề tùy chỉnh; áp dụng đồng nhất lên mọi rendition HLS và tự lưu cấu hình.
 - Tùy chỉnh AAC bitrate, số kênh, sample rate; chọn segment MPEG-TS `.ts` hoặc fragmented MP4 `.m4s` và số thứ tự segment bắt đầu.
-- Tab **Upload R2 / S3** riêng để chọn nhiều thư mục HLS local, upload tuần tự theo queue, kiểm tra kết nối và theo dõi byte/tốc độ/ETA.
-- Liên kết trực tiếp tài khoản **OnzLoad** qua trình duyệt và PKCE; app có thể tự upload HLS sau mỗi encode, tạo video/job trong OnzLoad và trả về link embed mà không lưu khóa storage chính trên máy người dùng.
-- Tab **Upload URL HLS** riêng: nhập nhiều URL `.m3u8`, mỗi dòng một link (kể cả URL ký bằng token); khi người dùng bấm Upload, app tải playlist con, segment, init file và key theo đúng cây thư mục, đổi playlist gốc thành `master.m3u8`, rồi upload cuốn chiếu từng link trong khi link kế tiếp tiếp tục tải.
-- Tab **Cloud Storage** duyệt trực tiếp toàn bộ bucket/path bằng rclone; hỗ trợ tạo thư mục, upload file/thư mục, đổi tên, sao chép, di chuyển, tải xuống, xóa hai bước, lọc object và copy URL public/HLS.
-- Ba mức tốc độ upload rclone: **Ổn định** 8 luồng, **Nhanh** 24 luồng (mặc định) và **Tối đa** 32 luồng; lựa chọn được tự lưu trên máy.
-- Có thể tự thêm kết quả vào upload queue sau mỗi lần encode; video vừa xong được upload ngay trong lúc encode queue tiếp tục xử lý video kế tiếp.
-- App hiển thị nút **Copy URL** ngay tại URL xem trước; sau khi upload thành công cũng xuất URL public tới `master.m3u8` cho từng mục, hỗ trợ sao chép và mở URL.
-- Tạo/cập nhật remote Cloudflare R2, Amazon S3 hoặc S3 tương thích ngay trong app. Secret được rclone làm mờ trước khi lưu vào `rclone.conf`, không xuất hiện trong tham số tiến trình hoặc log.
-- Tự lưu và khôi phục tab, cấu hình encode, tùy chọn nâng cao, thư mục đầu ra, remote, đường dẫn upload, URL CDN và auto-upload. Secret Key không được ghi dạng plaintext vào localStorage.
+- Chỉ có hai màn hình chính: **Encode HLS** và **Upload OnzLoad**; không có tab Cloud Storage hoặc cấu hình R2/S3 trên máy người dùng.
+- Liên kết tài khoản **OnzLoad** qua trình duyệt và PKCE; token thiết bị được mã hóa bằng kho khóa của hệ điều hành.
+- Có thể tự upload sau mỗi encode hoặc chọn nhiều thư mục HLS đã có. OnzLoad tự chọn storage, cấp quyền upload tạm thời, kiểm tra HLS và tạo video/job trong database.
+- Hiển thị hàng đợi, byte, tốc độ, ETA và link embed của từng video; hỗ trợ dừng, thử lại, sao chép hoặc mở video vừa tạo.
+- Tự lưu cấu hình encode, tùy chọn nâng cao, thư mục đầu ra và lựa chọn auto-upload. Encoder không lưu Access Key, Secret Key, endpoint, bucket hoặc URL CDN.
 - Liệt kê subtitle nhúng theo đúng stream index, codec, ngôn ngữ, tiêu đề và cờ default/forced.
 - Chọn một hoặc nhiều subtitle track và xuất hàng loạt; SRT/ASS/WebVTT được giữ nguyên, `mov_text` chuyển sang SRT, PGS xuất SUP và subtitle ảnh khác xuất MKS.
 - Xuất HLS adaptive 1080p/720p/480p hoặc 720p/480p/360p.
@@ -50,7 +46,7 @@ npm test
 npm run smoke:encode
 ```
 
-Smoke test tạo một video 720p có subtitle SRT nhúng trong thư mục tạm, kiểm tra HLS Copy video có Annex B và giải mã lại được, ba rendition adaptive, cấu hình nâng cao fMP4 nhiều rendition, encode thêm bằng GPU nếu máy có encoder hoạt động, rclone copy cục bộ kèm tiến trình JSON, rồi liệt kê và xuất lại subtitle trước khi tự dọn dữ liệu tạm.
+Smoke test tạo một video 720p có subtitle SRT nhúng trong thư mục tạm, kiểm tra HLS Copy video có Annex B và giải mã lại được, ba rendition adaptive, cấu hình nâng cao fMP4 nhiều rendition, encode thêm bằng GPU nếu máy có encoder hoạt động, kiểm tra engine truyền file nội bộ và xuất lại subtitle trước khi tự dọn dữ liệu tạm.
 
 ## Cấu hình encode nâng cao
 
@@ -68,35 +64,19 @@ Bật **Đóng logo vào video** trong phần cấu hình luồng, chọn ảnh 
 
 Đóng logo cần xử lý lại từng frame, vì vậy không dùng được với **Siêu nhanh · Copy**. Khi bật logo từ Copy, app tự chuyển sang **Một chất lượng**; sau đó có thể chọn Adaptive nếu cần nhiều chất lượng. Bộ lọc overlay chạy bằng CPU, còn encode H.264 vẫn có thể dùng GPU.
 
-## Cấu hình upload R2 / S3
+## Upload qua OnzLoad
 
-Ứng dụng đã đóng gói sẵn rclone 1.75.0 cho macOS ARM64 và Windows x64. Trong tab **Upload R2 / S3**, có thể tạo/cập nhật remote bằng Access Key ID, Secret Access Key, endpoint và region; hoặc dùng remote đã có trong `rclone.conf`. Với remote S3/R2, đường dẫn đích có dạng `ten-bucket/hls`; app sẽ tự nối tên thư mục HLS local, ví dụ `r2:ten-bucket/hls/ten-video-hls`.
+Trong tab **Upload OnzLoad**, bấm **Đăng nhập OnzLoad**. Trình duyệt yêu cầu người dùng xác nhận thiết bị; sau callback PKCE, token thiết bị được mã hóa bằng kho khóa của hệ điều hành.
 
-Nếu `rclone.conf` được mã hóa toàn bộ, app vẫn dùng được remote hiện có nhưng sẽ không chỉnh sửa file cấu hình đó. Hãy dùng `rclone config` trong Terminal cho trường hợp này.
+Người dùng không nhập hoặc lưu thông tin R2. Khi bắt đầu upload, encoder gửi manifest HLS cho OnzLoad; server chọn storage đang hoạt động và trả credential ngắn hạn, giới hạn trong đúng prefix của video. Engine truyền file nội bộ được buộc bỏ qua mọi `rclone.conf` có sẵn trên máy.
 
-Upload dùng `rclone copy`, không dùng `sync`: file ở đích không có trong thư mục local sẽ không bị xóa. Sau upload, thư mục HLS local cũng được giữ nguyên.
+Bật **Tự upload và tạo video sau mỗi encode** để đầu ra được chuẩn hóa H.264/yuv420p + AAC-LC stereo 48 kHz. Sau khi truyền file, OnzLoad xác minh playlist/segment ở phía server rồi hoàn tất `MediaAsset` và `EncodeJob`; encoder chỉ nhận lại link embed.
 
-## Liên kết OnzLoad
-
-Trong tab **Upload R2 / S3**, nhập `https://onzload.com` và bấm **Đăng nhập**. Trình duyệt sẽ yêu cầu người dùng xác nhận thiết bị; sau callback PKCE, token thiết bị được mã hóa bằng kho khóa của hệ điều hành. Khi upload, OnzLoad chỉ cấp credential R2 ngắn hạn, giới hạn trong đúng prefix của video đang tạo. Encoder không nhận khóa storage chính và không kết nối trực tiếp PostgreSQL/Prisma.
-
-Bật **Tự upload và tạo video sau mỗi encode** để đầu ra được chuẩn hóa H.264/yuv420p + AAC-LC stereo 48 kHz, upload ngay sau khi encode xong, rồi để OnzLoad xác minh toàn bộ playlist/segment trước khi đánh dấu video và encode job hoàn tất.
-
-Với tab **Upload URL HLS**, chọn remote/bucket đích, nhập tùy chọn tên folder storage rồi dán một hoặc nhiều URL, mỗi dòng một playlist. App chỉ chạy khi người dùng chủ động bấm Upload. Ngay khi một link tải xong, thư mục tạm của link đó được đưa vào rclone upload trong lúc downloader tiếp tục link kế tiếp; URL public xuất hiện ngay khi từng mục upload thành công, không cần chờ cả batch. URL/token chỉ nằm trong bộ nhớ khi tải, không được lưu vào localStorage, tên file hoặc log. App dùng một thư mục tạm để giữ nguyên quan hệ giữa master playlist, child playlist, segment, init file và key; bản tạm này tự xóa sau khi upload thành công, khi hủy batch, khi xóa item khỏi queue hoặc khi thoát app. Nếu tải hay upload lỗi, item và bản tạm được giữ đến khi thử lại hoặc thoát app.
-
-Với HLS có nhiều segment nhỏ, mức **Nhanh** chạy 24 file song song, 32 checkers và buffer 8 MiB mỗi transfer. Mức **Tối đa** chạy 32 file song song và 64 checkers, phù hợp mạng upload nhanh; nếu gặp lỗi timeout/429 hoặc máy thiếu RAM, chuyển về **Nhanh** hoặc **Ổn định**. Cấu hình được chụp riêng cho từng item khi bắt đầu queue.
-
-Để app xuất URL phát HLS, nhập **URL public / CDN của bucket** ở phần đích upload, ví dụ `https://cdn.daophim.space`. Đây phải là custom domain gắn trực tiếp với bucket hoặc URL `r2.dev` đã bật public access, không phải endpoint API `*.r2.cloudflarestorage.com`. App tự bỏ tên bucket khỏi đường dẫn rclone và ghép object key tới `master.m3u8`; cấu hình này được ghi nhớ riêng theo từng remote trên máy.
-
-## Quản lý Cloud Storage
-
-Tab **Cloud Storage** dùng các remote rclone đã cấu hình để duyệt R2, S3 và dịch vụ S3 tương thích. Đường dẫn nhập theo dạng `ten-bucket/thu-muc`; nếu token chỉ có quyền trên một bucket và không được phép liệt kê gốc remote, hãy nhập thẳng tên bucket. Object storage dùng thư mục ảo nên app tạo file `.keep` ẩn cho thư mục trống và không hiển thị marker này trong danh sách.
-
-Đổi tên, sao chép và di chuyển đều kiểm tra đường dẫn đích trước khi chạy, không ghi đè object có sẵn. Di chuyển/xóa thư mục không cho phép chọn gốc remote; xóa cần xác nhận hai bước và sẽ xóa vĩnh viễn mọi object con. Các thao tác thay đổi cloud storage, upload queue và tải URL HLS được khóa tuần tự để tránh nhiều tiến trình rclone sửa cùng một đích.
+Encoder không nhận khóa storage chính, không kết nối trực tiếp PostgreSQL/Prisma và không có quyền duyệt, sửa hoặc xóa các object khác trong bucket.
 
 ## Tạo bộ cài
 
-Các lệnh đóng gói tự chuẩn bị binary cần thiết trong `vendor/`. Rclone 1.75.0 được tải từ trang phát hành chính thức và kiểm tra SHA-256; trên Windows, FFmpeg/FFprobe được sao chép từ dependency đã cài bằng `npm ci`. Binary sinh ra không được commit vào Git.
+Các lệnh đóng gói tự chuẩn bị binary cần thiết trong `vendor/`. Engine upload nội bộ được tải từ bản phát hành chính thức và kiểm tra SHA-256; trên Windows, FFmpeg/FFprobe được sao chép từ dependency đã cài bằng `npm ci`. Binary sinh ra không được commit vào Git.
 
 Trên macOS:
 

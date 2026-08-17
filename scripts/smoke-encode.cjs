@@ -8,7 +8,7 @@ const { buildEncodeCommand } = require('../dist-electron/electron/encoder/comman
 const { buildHlsValidationArgs } = require('../dist-electron/electron/encoder/validate.js');
 const { inspectHardwareAcceleration } = require('../dist-electron/electron/encoder/hardware.js');
 const { exportSubtitleTracks } = require('../dist-electron/electron/subtitles/export.js');
-const { parseRcloneStatsLine } = require('../dist-electron/electron/rclone/upload.js');
+const { parseRcloneStatsLine } = require('../dist-electron/electron/onzload/upload.js');
 
 function run(binary, args, label) {
   const result = spawnSync(binary, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -270,7 +270,7 @@ try {
     throw new Error('Nội dung subtitle xuất ra không khớp nguồn.');
   }
 
-  console.log(`SMOKE_OK: Copy video HLS có Annex B, HLS một chất lượng có logo, ${variants} rendition adaptive HLS, HLS fMP4 nâng cao${hardwareEncoder ? `, ${hardwareEncoder.label}` : ''}, rclone upload local và 1 subtitle SRT đều chính xác.`);
+  console.log(`SMOKE_OK: Copy video HLS có Annex B, HLS một chất lượng có logo, ${variants} rendition adaptive HLS, HLS fMP4 nâng cao${hardwareEncoder ? `, ${hardwareEncoder.label}` : ''}, engine upload nội bộ và 1 subtitle SRT đều chính xác.`);
   if (process.env.KEEP_SMOKE_OUTPUT === '1') console.log(`Output: ${outputPath}`);
 } finally {
   if (process.env.KEEP_SMOKE_OUTPUT !== '1') rmSync(root, { recursive: true, force: true });

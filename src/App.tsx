@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
-  ArrowLeft,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -11,33 +10,24 @@ import {
   CloudUpload,
   Cpu,
   Download,
-  File as FileIcon,
   FileVideo2,
   Film,
   Folder,
-  FolderPlus,
   FolderOpen,
   Gauge,
-  HardDrive,
-  Home,
   ImageIcon,
   Layers3,
   Link2,
   ListOrdered,
   LoaderCircle,
   Pause,
-  Pencil,
   Play,
   Plus,
-  RefreshCw,
   RotateCcw,
-  Search,
   ShieldCheck,
   SlidersHorizontal,
   Square,
   Terminal,
-  Trash2,
-  Upload,
   ExternalLink,
   X,
   Zap,
@@ -45,15 +35,11 @@ import {
 import { PRESETS, SPEEDS } from '../shared/presets';
 import { DEFAULT_ADVANCED_ENCODE_SETTINGS } from '../shared/encode-settings';
 import { DEFAULT_LOGO_OVERLAY_SETTINGS } from '../shared/logo-overlay';
-import { buildPublicHlsUrl, buildPublicStorageUrl, normalizePublicBaseUrl } from '../shared/public-url';
-import { RCLONE_UPLOAD_PERFORMANCE_PROFILES } from '../shared/upload-performance';
 import { scrollLogContainerToEnd } from './log-scroll';
 import { localMediaUrl } from './local-media-url';
 import { logoPreviewStyle } from './logo-preview';
 import { loadAppPreferences, saveAppPreferences } from './preferences';
-import { isValidRemoteHlsUrl, parseRemoteHlsUrlLines } from './remote-hls-input';
 import {
-  getParallelQueueReadiness,
   nextQueuedItem,
   queueStatusLabel,
   removeQueueItem,
@@ -63,7 +49,6 @@ import {
 } from '../shared/queue';
 import type {
   AdvancedEncodeSettings,
-  CloudStorageEntry,
   EncodeConfig,
   EncodeEvent,
   EncodeProgress,
@@ -73,34 +58,21 @@ import type {
   OnzloadSessionState,
   OnzloadUploadEvent,
   PresetId,
-  RcloneStatus,
-  RcloneProvider,
-  RcloneRemoteConfig,
-  RcloneUploadConfig,
-  RcloneUploadEvent,
   RcloneUploadPerformanceId,
   RcloneUploadProgress,
-  RemoteHlsDownloadEvent,
-  RemoteHlsDownloadProgress,
   SpeedId,
   VideoEncoderId,
 } from '../shared/types';
 
 type AppStatus = 'idle' | 'probing' | 'ready' | 'encoding' | 'completed' | 'failed' | 'cancelled';
 type SubtitleExportStatus = 'idle' | 'exporting' | 'success' | 'failed';
-type UploadStatus = 'idle' | 'uploading' | 'success' | 'failed' | 'cancelled';
-type TargetCheckStatus = 'idle' | 'checking' | 'success' | 'failed';
-type RemoteSaveStatus = 'idle' | 'saving' | 'success' | 'failed';
-type RemoteHlsStatus = 'idle' | 'downloading' | 'success' | 'failed' | 'cancelled';
-type AppTab = 'encode' | 'upload' | 'url-upload' | 'storage';
-type CloudActionStatus = 'idle' | 'working' | 'success' | 'failed';
+type AppTab = 'encode' | 'onzload';
 
 interface EncodeQueueItem {
   id: string;
   media: MediaInfo;
   status: QueueItemStatus;
   config: EncodeConfig | null;
-  autoUploadTarget: Omit<RcloneUploadConfig, 'sourcePath'> | null;
   autoUploadOnzload: boolean;
   jobId: string | null;
   outputPath: string;
@@ -124,39 +96,6 @@ interface OnzloadQueueItem {
   error: string;
 }
 
-interface UploadQueueItem {
-  id: string;
-  sourcePath: string;
-  status: QueueItemStatus;
-  config: RcloneUploadConfig | null;
-  jobId: string | null;
-  destination: string;
-  publicUrl: string;
-  progress: RcloneUploadProgress | null;
-  error: string;
-  temporarySource: boolean;
-  stopQueueAfterComplete: boolean;
-}
-
-interface RemoteHlsBatchRun {
-  urls: string[];
-  index: number;
-  outputPaths: string[];
-  failures: string[];
-  folderPrefix: string;
-  target: Omit<RcloneUploadConfig, 'sourcePath'>;
-  downloadsComplete: boolean;
-}
-
-interface RemoteHlsBatchProgress {
-  total: number;
-  processed: number;
-  downloaded: number;
-  failed: number;
-  uploaded: number;
-  uploadFailed: number;
-}
-
 const ACCEPTED_EXTENSIONS = ['mp4', 'mkv', 'mov', 'avi', 'webm', 'm4v', 'ts', 'mts'];
 const LOGO_POSITIONS: Array<{ id: LogoOverlaySettings['position']; label: string }> = [
   { id: 'top-left', label: 'Trên trái' },
@@ -166,7 +105,7 @@ const LOGO_POSITIONS: Array<{ id: LogoOverlaySettings['position']; label: string
   { id: 'center', label: 'Chính giữa' },
 ];
 
-function createQueueId(prefix: 'encode' | 'upload' | 'onzload'): string {
+function createQueueId(prefix: 'encode' | 'onzload'): string {
   return `${prefix}-${globalThis.crypto.randomUUID()}`;
 }
 
@@ -217,18 +156,6 @@ function formatFps(fps: number | null): string {
   if (fps == null || !Number.isFinite(fps) || fps <= 0) return '—';
   const rounded = Math.round(fps * 1_000) / 1_000;
   return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(3).replace(/0+$/, '')} fps`;
-}
-
-function formatCloudDate(value: string): string {
-  if (!value) return '—';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('vi-VN', { dateStyle: 'short', timeStyle: 'short' });
-}
-
-function parentCloudStoragePath(value: string): string {
-  const normalized = value.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
-  const separator = normalized.lastIndexOf('/');
-  return separator < 0 ? '' : normalized.slice(0, separator);
 }
 
 function directoryOf(filePath: string): string {
@@ -358,69 +285,15 @@ export default function App() {
   const [subtitleExportStatus, setSubtitleExportStatus] = useState<SubtitleExportStatus>('idle');
   const [subtitleExportMessage, setSubtitleExportMessage] = useState('');
   const [subtitleOutputDirectory, setSubtitleOutputDirectory] = useState('');
-  const [rcloneStatus, setRcloneStatus] = useState<RcloneStatus>({
-    available: false,
-    version: null,
-    remotes: [],
-    message: 'Đang tìm rclone…',
-  });
-  const [isRcloneLoading, setIsRcloneLoading] = useState(true);
-  const [selectedRemote, setSelectedRemote] = useState(savedPreferences.upload.selectedRemote);
-  const [remoteDestinationPath, setRemoteDestinationPath] = useState(savedPreferences.upload.remoteDestinationPath);
-  const [publicBaseUrl, setPublicBaseUrl] = useState('');
-  const [copiedPublicUrl, setCopiedPublicUrl] = useState('');
-  const [uploadAfterEncode, setUploadAfterEncode] = useState(savedPreferences.upload.uploadAfterEncode);
-  const [uploadPerformanceId, setUploadPerformanceId] = useState<RcloneUploadPerformanceId>(savedPreferences.upload.performanceId);
-  const [targetCheckStatus, setTargetCheckStatus] = useState<TargetCheckStatus>('idle');
-  const [targetCheckMessage, setTargetCheckMessage] = useState('');
-  const [uploadStatus, setUploadStatus] = useState<UploadStatus>('idle');
-  const [uploadJobId, setUploadJobId] = useState<string | null>(null);
-  const [uploadProgress, setUploadProgress] = useState<RcloneUploadProgress | null>(null);
-  const [uploadDestination, setUploadDestination] = useState('');
-  const [uploadPublicUrl, setUploadPublicUrl] = useState('');
-  const [uploadError, setUploadError] = useState('');
-  const [uploadLogs, setUploadLogs] = useState<string[]>([]);
+  const uploadPerformanceId: RcloneUploadPerformanceId = savedPreferences.upload.performanceId;
   const [localHlsPath, setLocalHlsPath] = useState('');
-  const [cloudStoragePath, setCloudStoragePath] = useState(
-    savedPreferences.upload.cloudStoragePath || savedPreferences.upload.remoteDestinationPath,
-  );
-  const [cloudStorageEntries, setCloudStorageEntries] = useState<CloudStorageEntry[]>([]);
-  const [cloudStorageLoading, setCloudStorageLoading] = useState(false);
-  const [cloudStorageLoadedRemote, setCloudStorageLoadedRemote] = useState('');
-  const [cloudStorageSearch, setCloudStorageSearch] = useState('');
-  const [selectedCloudStoragePath, setSelectedCloudStoragePath] = useState('');
-  const [cloudNewFolderName, setCloudNewFolderName] = useState('');
-  const [cloudRenameName, setCloudRenameName] = useState('');
-  const [cloudCopyDestination, setCloudCopyDestination] = useState('');
-  const [cloudMoveDestination, setCloudMoveDestination] = useState('');
-  const [cloudDeleteArmedPath, setCloudDeleteArmedPath] = useState('');
-  const [cloudActionStatus, setCloudActionStatus] = useState<CloudActionStatus>('idle');
-  const [cloudActionMessage, setCloudActionMessage] = useState('');
-  const [remoteHlsUrl, setRemoteHlsUrl] = useState('');
-  const [remoteHlsFolderName, setRemoteHlsFolderName] = useState('');
-  const [remoteHlsStatus, setRemoteHlsStatus] = useState<RemoteHlsStatus>('idle');
-  const [remoteHlsJobId, setRemoteHlsJobId] = useState<string | null>(null);
-  const [remoteHlsProgress, setRemoteHlsProgress] = useState<RemoteHlsDownloadProgress | null>(null);
-  const [remoteHlsMessage, setRemoteHlsMessage] = useState('');
-  const [remoteHlsBatchSourcePaths, setRemoteHlsBatchSourcePaths] = useState<string[]>([]);
-  const [remoteHlsBatchProgress, setRemoteHlsBatchProgress] = useState<RemoteHlsBatchProgress>({
-    total: 0,
-    processed: 0,
-    downloaded: 0,
-    failed: 0,
-    uploaded: 0,
-    uploadFailed: 0,
-  });
   const [encodeQueue, setEncodeQueue] = useState<EncodeQueueItem[]>([]);
-  const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const [onzloadQueue, setOnzloadQueue] = useState<OnzloadQueueItem[]>([]);
   const [encodeQueueRunning, setEncodeQueueRunning] = useState(false);
-  const [uploadQueueRunning, setUploadQueueRunning] = useState(false);
   const [activeEncodeQueueItemId, setActiveEncodeQueueItemId] = useState<string | null>(null);
-  const [activeUploadQueueItemId, setActiveUploadQueueItemId] = useState<string | null>(null);
   const [onzloadQueueRunning, setOnzloadQueueRunning] = useState(false);
   const [activeOnzloadQueueItemId, setActiveOnzloadQueueItemId] = useState<string | null>(null);
-  const [onzloadBaseUrl, setOnzloadBaseUrl] = useState(() => window.localStorage.getItem('dao-encoding:onzload-url') || 'https://onzload.com');
+  const [onzloadBaseUrl, setOnzloadBaseUrl] = useState('https://onzload.com');
   const [onzloadSession, setOnzloadSession] = useState<OnzloadSessionState>({
     connected: false,
     baseUrl: null,
@@ -432,43 +305,17 @@ export default function App() {
   const [onzloadAuthBusy, setOnzloadAuthBusy] = useState(false);
   const [uploadAfterEncodeOnzload, setUploadAfterEncodeOnzload] = useState(() => window.localStorage.getItem('dao-encoding:onzload-auto') === 'true');
   const [onzloadLogs, setOnzloadLogs] = useState<string[]>([]);
-  const [remoteProvider, setRemoteProvider] = useState<RcloneProvider>(savedPreferences.remoteDraft.provider);
-  const [remoteName, setRemoteName] = useState(savedPreferences.remoteDraft.name);
-  const [remoteAccessKeyId, setRemoteAccessKeyId] = useState(savedPreferences.remoteDraft.accessKeyId);
-  const [remoteSecretAccessKey, setRemoteSecretAccessKey] = useState('');
-  const [remoteEndpoint, setRemoteEndpoint] = useState(savedPreferences.remoteDraft.endpoint);
-  const [remoteRegion, setRemoteRegion] = useState(savedPreferences.remoteDraft.region);
-  const [remoteSaveStatus, setRemoteSaveStatus] = useState<RemoteSaveStatus>('idle');
-  const [remoteSaveMessage, setRemoteSaveMessage] = useState('');
   const dropDepth = useRef(0);
   const logOutputRef = useRef<HTMLDivElement>(null);
   const encodeQueueRef = useRef<EncodeQueueItem[]>([]);
-  const uploadQueueRef = useRef<UploadQueueItem[]>([]);
   const onzloadQueueRef = useRef<OnzloadQueueItem[]>([]);
   const activeEncodeQueueItemIdRef = useRef<string | null>(null);
-  const activeUploadQueueItemIdRef = useRef<string | null>(null);
   const activeOnzloadQueueItemIdRef = useRef<string | null>(null);
-  const remoteHlsUploadTargetRef = useRef<Omit<RcloneUploadConfig, 'sourcePath'> | null>(null);
-  const remoteHlsBatchRef = useRef<RemoteHlsBatchRun | null>(null);
-  const remoteHlsBatchSummaryRef = useRef<RemoteHlsBatchProgress>({
-    total: 0,
-    processed: 0,
-    downloaded: 0,
-    failed: 0,
-    uploaded: 0,
-    uploadFailed: 0,
-  });
 
   const replaceEncodeQueue = useCallback((updater: (items: EncodeQueueItem[]) => EncodeQueueItem[]) => {
     const next = updater(encodeQueueRef.current);
     encodeQueueRef.current = next;
     setEncodeQueue(next);
-  }, []);
-
-  const replaceUploadQueue = useCallback((updater: (items: UploadQueueItem[]) => UploadQueueItem[]) => {
-    const next = updater(uploadQueueRef.current);
-    uploadQueueRef.current = next;
-    setUploadQueue(next);
   }, []);
 
   const replaceOnzloadQueue = useCallback((updater: (items: OnzloadQueueItem[]) => OnzloadQueueItem[]) => {
@@ -482,42 +329,24 @@ export default function App() {
     setActiveEncodeQueueItemId(id);
   }, []);
 
-  const setActiveUploadQueueItem = useCallback((id: string | null) => {
-    activeUploadQueueItemIdRef.current = id;
-    setActiveUploadQueueItemId(id);
-  }, []);
-
   const setActiveOnzloadQueueItem = useCallback((id: string | null) => {
     activeOnzloadQueueItemIdRef.current = id;
     setActiveOnzloadQueueItemId(id);
   }, []);
 
   const isSubtitleExporting = subtitleExportStatus === 'exporting';
-  const isUploading = uploadStatus === 'uploading';
-  const isRemoteHlsDownloading = remoteHlsStatus === 'downloading';
-  const isBusy = status === 'probing' || status === 'encoding' || isSubtitleExporting || isUploading || isRemoteHlsDownloading || encodeQueueRunning || uploadQueueRunning;
+  const isBusy = status === 'probing' || status === 'encoding' || isSubtitleExporting || encodeQueueRunning;
   const encodeQueueSummary = useMemo(() => summarizeQueue(encodeQueue), [encodeQueue]);
-  const uploadQueueSummary = useMemo(() => summarizeQueue(uploadQueue), [uploadQueue]);
   const onzloadQueueSummary = useMemo(() => summarizeQueue(onzloadQueue), [onzloadQueue]);
-  const queueReadiness = getParallelQueueReadiness({
-    encodeQueueRunning,
-    uploadQueueRunning,
-    activeEncodeItemId: activeEncodeQueueItemId,
-    activeUploadItemId: activeUploadQueueItemId,
-    sharedBlocker: isSubtitleExporting,
-  });
+  const canProcessEncodeQueue = encodeQueueRunning && !activeEncodeQueueItemId && !isSubtitleExporting;
   const canStart = Boolean(
     encodeQueueSummary.queued > 0 &&
     outputDirectory &&
     (!logoOverlay.enabled || (logoOverlay.path && presetId !== 'copy-source')) &&
     (!uploadAfterEncodeOnzload || onzloadSession.connected) &&
-    !isSubtitleExporting &&
-    !isRemoteHlsDownloading,
+    !isSubtitleExporting,
   );
   const selectedPreset = PRESETS.find((item) => item.id === presetId)!;
-  const selectedUploadPerformance = RCLONE_UPLOAD_PERFORMANCE_PROFILES.find(
-    (profile) => profile.id === uploadPerformanceId,
-  ) ?? RCLONE_UPLOAD_PERFORMANCE_PROFILES[1];
   const selectedVideoEncoderLabel = selectedPreset.videoMode === 'copy'
     ? 'Stream Copy · không encode video'
     : videoEncoderId === 'auto'
@@ -528,102 +357,6 @@ export default function App() {
     : videoEncoderId;
   const cpuCrfAvailable = selectedPreset.videoMode !== 'copy' && selectedConcreteEncoderId === 'libx264';
   const hasCustomAdvancedSettings = JSON.stringify(advancedSettings) !== JSON.stringify(DEFAULT_ADVANCED_ENCODE_SETTINGS);
-  const uploadConfigured = Boolean(rcloneStatus.available && selectedRemote && remoteDestinationPath.trim());
-  const normalizedPublicBaseUrl = useMemo(() => {
-    try {
-      return normalizePublicBaseUrl(publicBaseUrl);
-    } catch {
-      return '';
-    }
-  }, [publicBaseUrl]);
-  const publicBaseUrlError = useMemo(() => {
-    try {
-      normalizePublicBaseUrl(publicBaseUrl);
-      return '';
-    } catch (error) {
-      return cleanError(error);
-    }
-  }, [publicBaseUrl]);
-  const parsedRemoteHlsUrls = useMemo(() => parseRemoteHlsUrlLines(remoteHlsUrl), [remoteHlsUrl]);
-  const invalidRemoteHlsUrlCount = useMemo(
-    () => parsedRemoteHlsUrls.filter((url) => !isValidRemoteHlsUrl(url)).length,
-    [parsedRemoteHlsUrls],
-  );
-  const remoteHlsUrlIsValid = parsedRemoteHlsUrls.length > 0 && invalidRemoteHlsUrlCount === 0;
-  const canUpload = Boolean(
-    uploadQueueSummary.queued > 0 &&
-    uploadQueue.every((item) => item.status !== 'queued' || item.config || uploadConfigured) &&
-    !isUploading &&
-    !isSubtitleExporting &&
-    !isRemoteHlsDownloading &&
-    !publicBaseUrlError,
-  );
-  const remoteCanSave = Boolean(
-    remoteName.trim() &&
-    remoteAccessKeyId.trim() &&
-    remoteSecretAccessKey.trim() &&
-    (remoteProvider === 'AWS' || remoteEndpoint.trim()) &&
-    remoteSaveStatus !== 'saving' &&
-    !isUploading,
-  );
-  const destinationPreview = selectedRemote
-    ? `${selectedRemote}:${[
-      remoteDestinationPath.trim().replace(/^\/+|\/+$/g, ''),
-      localHlsPath ? baseNameOf(localHlsPath) : 'ten-video-hls',
-    ].filter(Boolean).join('/')}`
-    : 'Chọn remote để xem đường dẫn đích';
-  const publicUrlPreview = buildPublicHlsUrl({
-    publicBaseUrl: normalizedPublicBaseUrl,
-    destinationPath: remoteDestinationPath,
-    sourcePath: localHlsPath || 'ten-video-hls',
-  });
-  const filteredCloudStorageEntries = useMemo(() => {
-    const query = cloudStorageSearch.trim().toLocaleLowerCase('vi');
-    return query
-      ? cloudStorageEntries.filter((entry) => entry.name.toLocaleLowerCase('vi').includes(query))
-      : cloudStorageEntries;
-  }, [cloudStorageEntries, cloudStorageSearch]);
-  const selectedCloudStorageEntry = useMemo(
-    () => cloudStorageEntries.find((entry) => entry.path === selectedCloudStoragePath) ?? null,
-    [cloudStorageEntries, selectedCloudStoragePath],
-  );
-  const selectedCloudStoragePublicUrl = selectedCloudStorageEntry
-    ? buildPublicStorageUrl({
-      publicBaseUrl: normalizedPublicBaseUrl,
-      storagePath: selectedCloudStorageEntry.path,
-      directory: selectedCloudStorageEntry.isDirectory,
-    })
-    : '';
-  const selectedCloudStorageHlsUrl = selectedCloudStorageEntry?.isDirectory
-    ? buildPublicStorageUrl({
-      publicBaseUrl: normalizedPublicBaseUrl,
-      storagePath: selectedCloudStorageEntry.path,
-      appendFile: 'master.m3u8',
-    })
-    : '';
-  const cloudActionBusy = cloudActionStatus === 'working';
-  const cloudFolderCount = cloudStorageEntries.filter((entry) => entry.isDirectory).length;
-  const cloudFileCount = cloudStorageEntries.length - cloudFolderCount;
-  const cloudTotalBytes = cloudStorageEntries.reduce((total, entry) => total + (entry.isDirectory ? 0 : entry.size), 0);
-
-  const refreshRclone = useCallback(async (preferredRemote = '') => {
-    setIsRcloneLoading(true);
-    setTargetCheckStatus('idle');
-    setTargetCheckMessage('');
-    try {
-      const result = await window.encoder.getRcloneStatus();
-      setRcloneStatus(result);
-      setSelectedRemote((current) => {
-        if (preferredRemote && result.remotes.some((remote) => remote.name === preferredRemote)) return preferredRemote;
-        return result.remotes.some((remote) => remote.name === current) ? current : result.remotes[0]?.name ?? '';
-      });
-    } catch (error) {
-      setRcloneStatus({ available: false, version: null, remotes: [], message: cleanError(error) });
-      setSelectedRemote('');
-    } finally {
-      setIsRcloneLoading(false);
-    }
-  }, []);
 
   const refreshOnzload = useCallback(async () => {
     try {
@@ -688,14 +421,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!selectedRemote) {
-      setPublicBaseUrl('');
-      return;
-    }
-    setPublicBaseUrl(localStorage.getItem(`dao-phim:public-base-url:${selectedRemote}`) ?? '');
-  }, [selectedRemote]);
-
-  useEffect(() => {
     saveAppPreferences(window.localStorage, {
       version: 1,
       activeTab,
@@ -710,228 +435,21 @@ export default function App() {
         logoOverlay,
       },
       upload: {
-        selectedRemote,
-        remoteDestinationPath,
-        uploadAfterEncode,
         performanceId: uploadPerformanceId,
-        cloudStoragePath,
-      },
-      remoteDraft: {
-        provider: remoteProvider,
-        name: remoteName,
-        accessKeyId: remoteAccessKeyId,
-        endpoint: remoteEndpoint,
-        region: remoteRegion,
       },
     });
   }, [
     activeTab,
     advancedSettings,
-    cloudStoragePath,
     logoOverlay,
     outputDirectory,
     presetId,
-    remoteAccessKeyId,
-    remoteDestinationPath,
-    remoteEndpoint,
-    remoteName,
-    remoteProvider,
-    remoteRegion,
     segmentDuration,
-    selectedRemote,
     showAdvancedSettings,
     speedId,
-    uploadAfterEncode,
     uploadPerformanceId,
     videoEncoderId,
   ]);
-
-  const changePublicBaseUrl = (value: string) => {
-    setPublicBaseUrl(value);
-    setCopiedPublicUrl('');
-    if (selectedRemote) localStorage.setItem(`dao-phim:public-base-url:${selectedRemote}`, value);
-  };
-
-  const copyPublicUrl = async (url: string) => {
-    if (!url) return;
-    await window.encoder.copyText(url);
-    setCopiedPublicUrl(url);
-  };
-
-  const loadCloudStorage = useCallback(async (pathOverride?: string, preserveActionState = false): Promise<boolean> => {
-    if (!selectedRemote) {
-      setCloudActionStatus('failed');
-      setCloudActionMessage('Hãy cấu hình và chọn remote rclone trước.');
-      return false;
-    }
-    const targetPath = pathOverride ?? cloudStoragePath;
-    setCloudStorageLoading(true);
-    if (!preserveActionState) {
-      setCloudActionStatus('idle');
-      setCloudActionMessage('');
-    }
-    setCloudDeleteArmedPath('');
-    try {
-      const result = await window.encoder.listCloudStorage({ remoteName: selectedRemote, path: targetPath });
-      setCloudStoragePath(result.path);
-      setCloudStorageEntries(result.entries);
-      setCloudStorageLoadedRemote(selectedRemote);
-      setSelectedCloudStoragePath('');
-      setCloudRenameName('');
-      setCloudCopyDestination('');
-      setCloudMoveDestination('');
-      return true;
-    } catch (error) {
-      setCloudStorageEntries([]);
-      setCloudStorageLoadedRemote(selectedRemote);
-      setCloudActionStatus('failed');
-      setCloudActionMessage(cleanError(error));
-      return false;
-    } finally {
-      setCloudStorageLoading(false);
-    }
-  }, [cloudStoragePath, selectedRemote]);
-
-  const runCloudStorageAction = async (
-    action: () => Promise<{ message: string } | null>,
-    options: { refresh?: boolean; clearSelection?: boolean } = { refresh: true },
-  ) => {
-    if (cloudActionBusy) return;
-    setCloudActionStatus('working');
-    setCloudActionMessage('Đang thực hiện thao tác bằng rclone…');
-    setCloudDeleteArmedPath('');
-    try {
-      const result = await action();
-      if (!result) {
-        setCloudActionStatus('idle');
-        setCloudActionMessage('');
-        return;
-      }
-      if (options.clearSelection) {
-        setSelectedCloudStoragePath('');
-        setCloudRenameName('');
-        setCloudCopyDestination('');
-        setCloudMoveDestination('');
-      }
-      const refreshed = options.refresh === false ? true : await loadCloudStorage(cloudStoragePath, true);
-      if (refreshed) {
-        setCloudActionStatus('success');
-        setCloudActionMessage(result.message);
-      }
-    } catch (error) {
-      setCloudActionStatus('failed');
-      setCloudActionMessage(cleanError(error));
-    }
-  };
-
-  const selectCloudStorageEntry = (entry: CloudStorageEntry) => {
-    setSelectedCloudStoragePath(entry.path);
-    setCloudRenameName(entry.name);
-    setCloudCopyDestination(entry.path);
-    setCloudMoveDestination(entry.path);
-    setCloudDeleteArmedPath('');
-  };
-
-  const createCloudFolder = async () => {
-    if (!selectedRemote || !cloudNewFolderName.trim()) return;
-    await runCloudStorageAction(
-      () => window.encoder.createCloudStorageFolder({
-        remoteName: selectedRemote,
-        path: cloudStoragePath,
-        name: cloudNewFolderName,
-      }),
-    );
-    setCloudNewFolderName('');
-  };
-
-  const uploadCloudFiles = async () => {
-    if (!selectedRemote || cloudActionBusy) return;
-    const sourcePaths = await window.encoder.selectCloudStorageFiles();
-    if (sourcePaths.length === 0) return;
-    await runCloudStorageAction(() => window.encoder.uploadCloudStorageFiles({
-      remoteName: selectedRemote,
-      path: cloudStoragePath,
-      sourcePaths,
-    }));
-  };
-
-  const uploadCloudFolder = async () => {
-    if (!selectedRemote || cloudActionBusy) return;
-    const sourcePath = await window.encoder.selectCloudStorageFolder();
-    if (!sourcePath) return;
-    await runCloudStorageAction(() => window.encoder.uploadCloudStorageFolder({
-      remoteName: selectedRemote,
-      path: cloudStoragePath,
-      sourcePath,
-    }));
-  };
-
-  const renameSelectedCloudEntry = async () => {
-    if (!selectedRemote || !selectedCloudStorageEntry || !cloudRenameName.trim()) return;
-    await runCloudStorageAction(
-      () => window.encoder.renameCloudStorageEntry({
-        remoteName: selectedRemote,
-        path: selectedCloudStorageEntry.path,
-        isDirectory: selectedCloudStorageEntry.isDirectory,
-        newName: cloudRenameName,
-      }),
-      { refresh: true, clearSelection: true },
-    );
-  };
-
-  const copySelectedCloudEntry = async () => {
-    if (!selectedRemote || !selectedCloudStorageEntry || !cloudCopyDestination.trim()) return;
-    await runCloudStorageAction(() => window.encoder.copyCloudStorageEntry({
-      remoteName: selectedRemote,
-      path: selectedCloudStorageEntry.path,
-      destinationPath: cloudCopyDestination,
-      isDirectory: selectedCloudStorageEntry.isDirectory,
-    }));
-  };
-
-  const moveSelectedCloudEntry = async () => {
-    if (!selectedRemote || !selectedCloudStorageEntry || !cloudMoveDestination.trim()) return;
-    await runCloudStorageAction(
-      () => window.encoder.moveCloudStorageEntry({
-        remoteName: selectedRemote,
-        path: selectedCloudStorageEntry.path,
-        destinationPath: cloudMoveDestination,
-        isDirectory: selectedCloudStorageEntry.isDirectory,
-      }),
-      { refresh: true, clearSelection: true },
-    );
-  };
-
-  const downloadSelectedCloudEntry = async () => {
-    if (!selectedRemote || !selectedCloudStorageEntry) return;
-    await runCloudStorageAction(
-      () => window.encoder.downloadCloudStorageEntry({
-        remoteName: selectedRemote,
-        path: selectedCloudStorageEntry.path,
-        isDirectory: selectedCloudStorageEntry.isDirectory,
-        name: selectedCloudStorageEntry.name,
-      }),
-      { refresh: false },
-    );
-  };
-
-  const deleteSelectedCloudEntry = async () => {
-    if (!selectedRemote || !selectedCloudStorageEntry) return;
-    if (cloudDeleteArmedPath !== selectedCloudStorageEntry.path) {
-      setCloudDeleteArmedPath(selectedCloudStorageEntry.path);
-      setCloudActionStatus('idle');
-      setCloudActionMessage(`Bấm Xác nhận xóa lần nữa để xóa ${selectedCloudStorageEntry.path}.`);
-      return;
-    }
-    await runCloudStorageAction(
-      () => window.encoder.deleteCloudStorageEntry({
-        remoteName: selectedRemote,
-        path: selectedCloudStorageEntry.path,
-        isDirectory: selectedCloudStorageEntry.isDirectory,
-      }),
-      { refresh: true, clearSelection: true },
-    );
-  };
 
   const addEncodeInputs = useCallback(async (filePaths: string[]) => {
     if (isBusy) return;
@@ -966,7 +484,6 @@ export default function App() {
       media: info,
       status: 'queued',
       config: null,
-      autoUploadTarget: null,
       autoUploadOnzload: false,
       jobId: null,
       outputPath: '',
@@ -987,42 +504,6 @@ export default function App() {
     setStatus('ready');
     if (failedCount > 0) setErrorMessage(`Đã bỏ qua ${failedCount} video không đọc được.`);
   }, [isBusy, replaceEncodeQueue]);
-
-  const loadInput = useCallback(async (filePath: string) => {
-    if (filePath) await addEncodeInputs([filePath]);
-  }, [addEncodeInputs]);
-
-  const enqueueUploadPaths = useCallback((
-    sourcePaths: string[],
-    target: Omit<RcloneUploadConfig, 'sourcePath'> | null = null,
-    temporarySource = false,
-    prioritize = false,
-    stopQueueAfterComplete = false,
-  ) => {
-    const activePaths = new Set(
-      uploadQueueRef.current
-        .filter((item) => item.status === 'queued' || item.status === 'running')
-        .map((item) => item.sourcePath),
-    );
-    const uniquePaths = [...new Set(sourcePaths.filter(Boolean))].filter((sourcePath) => !activePaths.has(sourcePath));
-    if (uniquePaths.length === 0) return 0;
-    const queueItems: UploadQueueItem[] = uniquePaths.map((sourcePath, index) => ({
-      id: createQueueId('upload'),
-      sourcePath,
-      status: 'queued',
-      config: target ? { sourcePath, ...target } : null,
-      jobId: null,
-      destination: '',
-      publicUrl: '',
-      progress: null,
-      error: '',
-      temporarySource,
-      stopQueueAfterComplete: stopQueueAfterComplete && index === uniquePaths.length - 1,
-    }));
-    replaceUploadQueue((current) => prioritize ? [...queueItems, ...current] : [...current, ...queueItems]);
-    setLocalHlsPath(uniquePaths[0]);
-    return queueItems.length;
-  }, [replaceUploadQueue]);
 
   const enqueueOnzloadPath = useCallback((
     sourcePath: string,
@@ -1051,103 +532,6 @@ export default function App() {
     replaceOnzloadQueue((items) => [...items, item]);
     return true;
   }, [replaceOnzloadQueue, segmentDuration]);
-
-  function finishRemoteHlsBatch(): void {
-    const batch = remoteHlsBatchRef.current;
-    if (!batch) return;
-    const summary = remoteHlsBatchSummaryRef.current;
-    setUploadQueueRunning(false);
-    setRemoteHlsStatus(summary.downloaded > 0 ? 'success' : 'failed');
-    setRemoteHlsMessage(
-      summary.downloaded === 0
-        ? `Không tải được link HLS nào. ${batch.failures[0] ?? ''}`.trim()
-        : `Đã upload ${summary.uploaded}/${summary.total} HLS lên storage${summary.failed > 0 ? ` · ${summary.failed} link nguồn lỗi` : ''}${summary.uploadFailed > 0 ? ` · ${summary.uploadFailed} upload lỗi` : ''}.`,
-    );
-    remoteHlsBatchRef.current = null;
-    remoteHlsUploadTargetRef.current = null;
-  }
-
-  function settleRemoteHlsUploadQueue(): void {
-    const batch = remoteHlsBatchRef.current;
-    if (!batch) return;
-    const batchPaths = new Set(batch.outputPaths);
-    const hasPendingBatchUpload = uploadQueueRef.current.some(
-      (item) => batchPaths.has(item.sourcePath) && (item.status === 'queued' || item.status === 'running'),
-    );
-    if (hasPendingBatchUpload) return;
-    if (!batch.downloadsComplete) {
-      // Do not let unrelated manual queue items run while waiting for the next URL in this batch.
-      setUploadQueueRunning(false);
-      return;
-    }
-    finishRemoteHlsBatch();
-  }
-
-  async function startRemoteHlsBatchItem(): Promise<void> {
-    const batch = remoteHlsBatchRef.current;
-    if (!batch) return;
-    const position = batch.index + 1;
-    const folderName = batch.folderPrefix
-      ? batch.urls.length > 1
-        ? `${batch.folderPrefix}-${String(position).padStart(2, '0')}`
-        : batch.folderPrefix
-      : undefined;
-    setRemoteHlsStatus('downloading');
-    setRemoteHlsProgress(null);
-    setRemoteHlsMessage(`Đang tải link ${position}/${batch.urls.length}…`);
-    try {
-      const result = await window.encoder.startRemoteHlsDownload({
-        url: batch.urls[batch.index],
-        folderName,
-      });
-      setRemoteHlsJobId(result.jobId);
-    } catch (error) {
-      advanceRemoteHlsBatch(undefined, cleanError(error));
-    }
-  }
-
-  function advanceRemoteHlsBatch(result?: { outputPath: string; fileCount: number; totalBytes: number }, errorMessage = ''): void {
-    const batch = remoteHlsBatchRef.current;
-    if (!batch) return;
-    if (result) {
-      batch.outputPaths.push(result.outputPath);
-      setRemoteHlsBatchSourcePaths([...batch.outputPaths]);
-      enqueueUploadPaths([result.outputPath], batch.target, true, true, true);
-      setUploadQueueRunning(true);
-    }
-    if (errorMessage) batch.failures.push(`Link ${batch.index + 1}: ${errorMessage}`);
-    const processed = batch.index + 1;
-    const batchProgress = {
-      total: batch.urls.length,
-      processed,
-      downloaded: batch.outputPaths.length,
-      failed: batch.failures.length,
-      uploaded: remoteHlsBatchSummaryRef.current.uploaded,
-      uploadFailed: remoteHlsBatchSummaryRef.current.uploadFailed,
-    };
-    remoteHlsBatchSummaryRef.current = batchProgress;
-    setRemoteHlsBatchProgress(batchProgress);
-    setRemoteHlsJobId(null);
-
-    if (processed < batch.urls.length) {
-      batch.index += 1;
-      void startRemoteHlsBatchItem();
-      return;
-    }
-
-    batch.downloadsComplete = true;
-    setRemoteHlsUrl('');
-    if (batch.outputPaths.length === 0) {
-      finishRemoteHlsBatch();
-      return;
-    }
-
-    setRemoteHlsStatus('success');
-    setRemoteHlsMessage(
-      `Đã tải ${batch.outputPaths.length}/${batch.urls.length} link${batch.failures.length > 0 ? ` · ${batch.failures.length} link lỗi` : ''}. Đang hoàn tất upload lên storage…`,
-    );
-    settleRemoteHlsUploadQueue();
-  }
 
   useEffect(() => {
     return window.encoder.onEncodeEvent((event: EncodeEvent) => {
@@ -1194,10 +578,6 @@ export default function App() {
             progress: completedProgress,
           }));
         }
-        if (queueItem?.autoUploadTarget) {
-          enqueueUploadPaths([event.outputPath], queueItem.autoUploadTarget);
-          setUploadQueueRunning(true);
-        }
         if (queueItem?.autoUploadOnzload) {
           enqueueOnzloadPath(event.outputPath, queueItem.media.name, queueItem.config?.segmentDuration ?? 4);
           setOnzloadQueueRunning(true);
@@ -1225,19 +605,19 @@ export default function App() {
         setActiveEncodeQueueItem(null);
       }
     });
-  }, [enqueueOnzloadPath, enqueueUploadPaths, replaceEncodeQueue, setActiveEncodeQueueItem]);
-
-  useEffect(() => {
-    void refreshRclone();
-  }, [refreshRclone]);
+  }, [enqueueOnzloadPath, replaceEncodeQueue, setActiveEncodeQueueItem]);
 
   useEffect(() => {
     void refreshOnzload();
   }, [refreshOnzload]);
 
   useEffect(() => {
-    window.localStorage.setItem('dao-encoding:onzload-url', onzloadBaseUrl);
-  }, [onzloadBaseUrl]);
+    window.localStorage.removeItem('dao-encoding:onzload-url');
+    for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
+      const key = window.localStorage.key(index);
+      if (key?.startsWith('dao-phim:public-base-url:')) window.localStorage.removeItem(key);
+    }
+  }, []);
 
   useEffect(() => {
     window.localStorage.setItem('dao-encoding:onzload-auto', String(uploadAfterEncodeOnzload));
@@ -1246,145 +626,6 @@ export default function App() {
   useEffect(() => {
     void refreshHardwareAcceleration();
   }, [refreshHardwareAcceleration]);
-
-  useEffect(() => {
-    if (activeTab !== 'storage' || !selectedRemote || cloudStorageLoadedRemote === selectedRemote) return;
-    void loadCloudStorage(cloudStoragePath);
-  }, [activeTab, cloudStorageLoadedRemote, cloudStoragePath, loadCloudStorage, selectedRemote]);
-
-  useEffect(() => {
-    return window.encoder.onRcloneUploadEvent((event: RcloneUploadEvent) => {
-      const queueItemId = activeUploadQueueItemIdRef.current;
-      if (event.type === 'started') {
-        setUploadJobId(event.jobId);
-        setUploadDestination(event.destination);
-        setUploadPublicUrl('');
-        setUploadStatus('uploading');
-        if (queueItemId) {
-          replaceUploadQueue((items) => updateQueueItem(items, queueItemId, {
-            jobId: event.jobId,
-            destination: event.destination,
-            status: 'running',
-          }));
-        }
-        return;
-      }
-      if (event.type === 'progress') {
-        setUploadProgress(event.progress);
-        if (queueItemId) {
-          replaceUploadQueue((items) => updateQueueItem(items, queueItemId, { progress: event.progress }));
-        }
-        return;
-      }
-      if (event.type === 'log') {
-        setUploadLogs((current) => [...current.slice(-199), event.line]);
-        return;
-      }
-      if (event.type === 'completed') {
-        const queueItem = queueItemId ? uploadQueueRef.current.find((item) => item.id === queueItemId) : null;
-        const publicUrl = queueItem?.config ? buildPublicHlsUrl(queueItem.config) : '';
-        const completedItemProgress = queueItem?.progress ?? initialUploadProgress();
-        if (queueItem?.temporarySource) {
-          const nextSummary = {
-            ...remoteHlsBatchSummaryRef.current,
-            uploaded: remoteHlsBatchSummaryRef.current.uploaded + 1,
-          };
-          remoteHlsBatchSummaryRef.current = nextSummary;
-          setRemoteHlsBatchProgress(nextSummary);
-          setRemoteHlsMessage(
-            publicUrl
-              ? `Đã upload ${nextSummary.uploaded}/${nextSummary.downloaded} HLS · URL mới đã sẵn sàng để sao chép.`
-              : `Đã upload ${nextSummary.uploaded}/${nextSummary.downloaded} HLS · chưa cấu hình URL public/CDN.`,
-          );
-        }
-        setUploadDestination(event.destination);
-        setUploadPublicUrl(publicUrl);
-        setUploadStatus('success');
-        setUploadProgress((current) => ({
-          ...(current ?? initialUploadProgress()),
-          percent: 100,
-          etaSeconds: 0,
-          files: current?.totalFiles || current?.files || 0,
-        }));
-        if (queueItemId) {
-          replaceUploadQueue((items) => updateQueueItem(items, queueItemId, {
-            status: 'completed',
-            destination: event.destination,
-            publicUrl,
-            progress: {
-              ...completedItemProgress,
-              percent: 100,
-              etaSeconds: 0,
-              files: completedItemProgress.totalFiles || completedItemProgress.files,
-            },
-          }));
-        }
-        if (queueItem?.temporarySource) {
-          void window.encoder.cleanupRemoteHlsDownload(queueItem.sourcePath).catch(() => undefined);
-        }
-        if (queueItem?.stopQueueAfterComplete) {
-          settleRemoteHlsUploadQueue();
-        }
-        setActiveUploadQueueItem(null);
-        return;
-      }
-      if (event.type === 'cancelled') {
-        setUploadStatus('cancelled');
-        if (queueItemId) {
-          replaceUploadQueue((items) => updateQueueItem(items, queueItemId, { status: 'cancelled' }));
-        }
-        const queueItem = queueItemId ? uploadQueueRef.current.find((item) => item.id === queueItemId) : null;
-        if (queueItem?.temporarySource) {
-          void window.encoder.cleanupRemoteHlsDownload(queueItem.sourcePath).catch(() => undefined);
-        }
-        if (queueItem?.stopQueueAfterComplete) {
-          setUploadQueueRunning(false);
-          setRemoteHlsMessage('Đã dừng upload URL HLS.');
-          const batch = remoteHlsBatchRef.current;
-          if (batch?.downloadsComplete) {
-            const batchPaths = new Set(batch.outputPaths);
-            replaceUploadQueue((items) => items.map((item) => (
-              batchPaths.has(item.sourcePath) && item.status === 'queued'
-                ? { ...item, status: 'cancelled' as const }
-                : item
-            )));
-            for (const item of uploadQueueRef.current) {
-              if (batchPaths.has(item.sourcePath) && item.status === 'cancelled') {
-                void window.encoder.cleanupRemoteHlsDownload(item.sourcePath).catch(() => undefined);
-              }
-            }
-            remoteHlsBatchRef.current = null;
-            remoteHlsUploadTargetRef.current = null;
-          }
-        }
-        setActiveUploadQueueItem(null);
-        return;
-      }
-      if (event.type === 'failed') {
-        setUploadError(event.message);
-        setUploadStatus('failed');
-        if (queueItemId) {
-          replaceUploadQueue((items) => updateQueueItem(items, queueItemId, {
-            status: 'failed',
-            error: event.message,
-          }));
-        }
-        const queueItem = queueItemId ? uploadQueueRef.current.find((item) => item.id === queueItemId) : null;
-        if (queueItem?.temporarySource) {
-          const nextSummary = {
-            ...remoteHlsBatchSummaryRef.current,
-            uploadFailed: remoteHlsBatchSummaryRef.current.uploadFailed + 1,
-          };
-          remoteHlsBatchSummaryRef.current = nextSummary;
-          setRemoteHlsBatchProgress(nextSummary);
-        }
-        if (queueItem?.stopQueueAfterComplete) {
-          settleRemoteHlsUploadQueue();
-        }
-        setActiveUploadQueueItem(null);
-      }
-    });
-  }, [replaceUploadQueue, setActiveUploadQueueItem]);
 
   useEffect(() => {
     return window.encoder.onOnzloadUploadEvent((event: OnzloadUploadEvent) => {
@@ -1441,58 +682,8 @@ export default function App() {
   }, [replaceOnzloadQueue, setActiveOnzloadQueueItem]);
 
   useEffect(() => {
-    return window.encoder.onRemoteHlsDownloadEvent((event: RemoteHlsDownloadEvent) => {
-      if (event.type === 'started') {
-        setRemoteHlsJobId(event.jobId);
-        setRemoteHlsStatus('downloading');
-        return;
-      }
-      if (event.type === 'progress') {
-        setRemoteHlsProgress(event.progress);
-        const batch = remoteHlsBatchRef.current;
-        setRemoteHlsMessage(batch
-          ? `Link ${batch.index + 1}/${batch.urls.length} · ${event.progress.statusText}`
-          : event.progress.statusText);
-        return;
-      }
-      if (event.type === 'completed') {
-        advanceRemoteHlsBatch(event.result);
-        return;
-      }
-      if (event.type === 'cancelled') {
-        const batch = remoteHlsBatchRef.current;
-        const completedPaths = batch?.outputPaths ?? [];
-        const batchPaths = new Set(completedPaths);
-        const runningPaths = new Set(
-          uploadQueueRef.current
-            .filter((item) => batchPaths.has(item.sourcePath) && item.status === 'running')
-            .map((item) => item.sourcePath),
-        );
-        replaceUploadQueue((items) => items.map((item) => (
-          batchPaths.has(item.sourcePath) && item.status === 'queued'
-            ? { ...item, status: 'cancelled' as const }
-            : item
-        )));
-        for (const outputPath of completedPaths) {
-          if (!runningPaths.has(outputPath)) void window.encoder.cleanupRemoteHlsDownload(outputPath).catch(() => undefined);
-        }
-        remoteHlsBatchRef.current = null;
-        setUploadQueueRunning(false);
-        setRemoteHlsStatus('cancelled');
-        setRemoteHlsMessage('Đã hủy batch URL HLS. Upload đang chạy cũng được dừng và dữ liệu tạm được dọn an toàn.');
-        setRemoteHlsJobId(null);
-        remoteHlsUploadTargetRef.current = null;
-        return;
-      }
-      if (event.type === 'failed') {
-        advanceRemoteHlsBatch(undefined, event.message);
-      }
-    });
-  }, [enqueueUploadPaths, replaceUploadQueue]);
-
-  useEffect(() => {
     if (showLogs) scrollLogContainerToEnd(logOutputRef.current);
-  }, [logs, showLogs, uploadLogs]);
+  }, [logs, showLogs]);
 
   const chooseInput = async () => {
     const filePaths = await window.encoder.selectInputs();
@@ -1523,102 +714,6 @@ export default function App() {
     }
     setLogoOverlay((current) => ({ ...current, enabled: true }));
     if (presetId === 'copy-source') setPresetId('single-source');
-  };
-
-  const chooseHlsFolder = async () => {
-    if (isBusy) return;
-    const directories = await window.encoder.selectHlsFolders();
-    if (directories.length === 0) return;
-    enqueueUploadPaths(directories);
-    setUploadStatus('idle');
-    setUploadProgress(null);
-    setUploadDestination('');
-    setUploadPublicUrl('');
-    setUploadError('');
-    setUploadLogs([]);
-  };
-
-  const startRemoteHlsDownload = useCallback(async () => {
-    if (!remoteHlsUrlIsValid || parsedRemoteHlsUrls.length === 0 || isBusy || !uploadConfigured || publicBaseUrlError) return;
-    const target: Omit<RcloneUploadConfig, 'sourcePath'> = {
-      remoteName: selectedRemote,
-      destinationPath: remoteDestinationPath,
-      publicBaseUrl: normalizedPublicBaseUrl || undefined,
-      performanceId: uploadPerformanceId,
-    };
-    const initialBatchProgress = {
-      total: parsedRemoteHlsUrls.length,
-      processed: 0,
-      downloaded: 0,
-      failed: 0,
-      uploaded: 0,
-      uploadFailed: 0,
-    };
-    remoteHlsUploadTargetRef.current = target;
-    remoteHlsBatchRef.current = {
-      urls: parsedRemoteHlsUrls,
-      index: 0,
-      outputPaths: [],
-      failures: [],
-      folderPrefix: remoteHlsFolderName.trim(),
-      target,
-      downloadsComplete: false,
-    };
-    setRemoteHlsBatchSourcePaths([]);
-    remoteHlsBatchSummaryRef.current = initialBatchProgress;
-    setRemoteHlsBatchProgress(initialBatchProgress);
-    setRemoteHlsStatus('downloading');
-    setRemoteHlsProgress(null);
-    setRemoteHlsMessage(`Đang chuẩn bị tải ${parsedRemoteHlsUrls.length} link HLS…`);
-    setUploadStatus('idle');
-    setUploadProgress(null);
-    setUploadDestination('');
-    setUploadPublicUrl('');
-    setUploadError('');
-    setUploadLogs([]);
-    await startRemoteHlsBatchItem();
-  }, [
-    isBusy,
-    normalizedPublicBaseUrl,
-    parsedRemoteHlsUrls,
-    publicBaseUrlError,
-    remoteDestinationPath,
-    remoteHlsFolderName,
-    remoteHlsUrlIsValid,
-    selectedRemote,
-    uploadConfigured,
-    uploadPerformanceId,
-  ]);
-
-  const cancelRemoteHlsDownload = async () => {
-    setUploadQueueRunning(false);
-    await Promise.all([
-      remoteHlsJobId ? window.encoder.cancelRemoteHlsDownload(remoteHlsJobId) : Promise.resolve(false),
-      uploadJobId ? window.encoder.cancelRcloneUpload(uploadJobId) : Promise.resolve(false),
-    ]);
-  };
-
-  const saveRemote = async () => {
-    const config: RcloneRemoteConfig = {
-      name: remoteName,
-      provider: remoteProvider,
-      accessKeyId: remoteAccessKeyId,
-      secretAccessKey: remoteSecretAccessKey,
-      endpoint: remoteEndpoint,
-      region: remoteRegion,
-    };
-    setRemoteSaveStatus('saving');
-    setRemoteSaveMessage('Đang bảo vệ secret và lưu rclone.conf…');
-    try {
-      const result = await window.encoder.saveRcloneRemote(config);
-      setRemoteSaveStatus('success');
-      setRemoteSaveMessage(result.message);
-      setRemoteSecretAccessKey('');
-      await refreshRclone(result.remote.name);
-    } catch (error) {
-      setRemoteSaveStatus('failed');
-      setRemoteSaveMessage(cleanError(error));
-    }
   };
 
   const toggleSubtitleTrack = (streamIndex: number) => {
@@ -1678,14 +773,6 @@ export default function App() {
 
   const startEncode = () => {
     if (!canStart || !outputDirectory) return;
-    const autoUploadTarget = uploadAfterEncode && uploadConfigured
-      ? {
-        remoteName: selectedRemote,
-        destinationPath: remoteDestinationPath,
-        publicBaseUrl: normalizedPublicBaseUrl || undefined,
-        performanceId: uploadPerformanceId,
-      }
-      : null;
     replaceEncodeQueue((items) => items.map((item) => {
       if (item.status !== 'queued') return item;
       const itemPresetId = uploadAfterEncodeOnzload && presetId === 'copy-source'
@@ -1707,7 +794,6 @@ export default function App() {
             : { ...advancedSettings },
           logoOverlay: { ...logoOverlay },
         },
-        autoUploadTarget,
         autoUploadOnzload: uploadAfterEncodeOnzload,
         error: '',
       };
@@ -1722,49 +808,6 @@ export default function App() {
     if (jobId) await window.encoder.cancelEncode(jobId);
   };
 
-  const testUploadTarget = async () => {
-    if (!selectedRemote) return;
-    setTargetCheckStatus('checking');
-    setTargetCheckMessage('Đang kiểm tra quyền truy cập…');
-    try {
-      const result = await window.encoder.testRcloneTarget({
-        remoteName: selectedRemote,
-        destinationPath: remoteDestinationPath,
-      });
-      setTargetCheckStatus('success');
-      setTargetCheckMessage(result.message);
-    } catch (error) {
-      setTargetCheckStatus('failed');
-      setTargetCheckMessage(cleanError(error));
-    }
-  };
-
-  const startRcloneUpload = () => {
-    if (!canUpload) return;
-    replaceUploadQueue((items) => items.map((item) => {
-      if (item.status !== 'queued' || item.config) return item;
-      return {
-        ...item,
-        config: {
-          sourcePath: item.sourcePath,
-          remoteName: selectedRemote,
-          destinationPath: remoteDestinationPath,
-          publicBaseUrl: normalizedPublicBaseUrl || undefined,
-          performanceId: uploadPerformanceId,
-        },
-        error: '',
-      };
-    }));
-    setUploadError('');
-    setUploadLogs([]);
-    setUploadQueueRunning(true);
-  };
-
-  const cancelRcloneUpload = async () => {
-    setUploadQueueRunning(false);
-    if (uploadJobId) await window.encoder.cancelRcloneUpload(uploadJobId);
-  };
-
   const removeEncodeQueueItem = (id: string) => {
     replaceEncodeQueue((items) => removeQueueItem(items, id));
   };
@@ -1773,7 +816,6 @@ export default function App() {
     replaceEncodeQueue((items) => updateQueueItem(items, id, {
       status: 'queued',
       config: null,
-      autoUploadTarget: null,
       autoUploadOnzload: false,
       jobId: null,
       outputPath: '',
@@ -1782,27 +824,6 @@ export default function App() {
       error: '',
     }));
     setStatus('ready');
-  };
-
-  const removeUploadQueueItem = (id: string) => {
-    const item = uploadQueueRef.current.find((candidate) => candidate.id === id);
-    if (item?.temporarySource) {
-      void window.encoder.cleanupRemoteHlsDownload(item.sourcePath).catch(() => undefined);
-    }
-    replaceUploadQueue((items) => removeQueueItem(items, id));
-  };
-
-  const retryUploadQueueItem = (id: string) => {
-    replaceUploadQueue((items) => updateQueueItem(items, id, {
-      status: 'queued',
-      jobId: null,
-      destination: '',
-      publicUrl: '',
-      progress: null,
-      error: '',
-      stopQueueAfterComplete: false,
-    }));
-    setUploadStatus('idle');
   };
 
   const removeOnzloadQueueItem = (id: string) => {
@@ -1828,6 +849,16 @@ export default function App() {
     setOnzloadQueueRunning(true);
   };
 
+  const chooseAndUploadOnzloadFolders = async () => {
+    if (!onzloadSession.connected || onzloadQueueRunning) return;
+    const folders = await window.encoder.selectHlsFolders();
+    const added = folders.reduce(
+      (count, folder) => count + (enqueueOnzloadPath(folder) ? 1 : 0),
+      0,
+    );
+    if (added > 0) setOnzloadQueueRunning(true);
+  };
+
   const cancelOnzloadUpload = async () => {
     setOnzloadQueueRunning(false);
     const item = activeOnzloadQueueItemIdRef.current
@@ -1837,7 +868,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!queueReadiness.encode) return;
+    if (!canProcessEncodeQueue) return;
 
     const nextItem = nextQueuedItem(encodeQueue);
     if (!nextItem) {
@@ -1889,85 +920,16 @@ export default function App() {
       setActiveEncodeQueueItem(null);
     });
   }, [
+    canProcessEncodeQueue,
     encodeQueue,
-    queueReadiness.encode,
     replaceEncodeQueue,
     setActiveEncodeQueueItem,
-  ]);
-
-  useEffect(() => {
-    if (!queueReadiness.upload || activeOnzloadQueueItemIdRef.current) return;
-
-    const nextItem = nextQueuedItem(uploadQueue);
-    if (!nextItem) {
-      setUploadQueueRunning(false);
-      return;
-    }
-    if (!nextItem.config) {
-      replaceUploadQueue((items) => updateQueueItem(items, nextItem.id, {
-        status: 'failed',
-        error: 'Item chưa có remote hoặc đường dẫn đích.',
-      }));
-      return;
-    }
-
-    const itemProgress = initialUploadProgress();
-    setActiveUploadQueueItem(nextItem.id);
-    replaceUploadQueue((items) => updateQueueItem(items, nextItem.id, {
-      status: 'running',
-      progress: itemProgress,
-      error: '',
-    }));
-    setLocalHlsPath(nextItem.sourcePath);
-    setUploadStatus('uploading');
-    setUploadProgress(itemProgress);
-    setUploadJobId(null);
-    setUploadDestination('');
-    setUploadPublicUrl('');
-    setUploadError('');
-    setUploadLogs([]);
-
-    void window.encoder.startRcloneUpload(nextItem.config).then((result) => {
-      setUploadJobId(result.jobId);
-      setUploadDestination(result.destination);
-      replaceUploadQueue((items) => updateQueueItem(items, nextItem.id, {
-        jobId: result.jobId,
-        destination: result.destination,
-      }));
-    }).catch((error) => {
-      const message = cleanError(error);
-      setUploadStatus('failed');
-      setUploadError(message);
-      replaceUploadQueue((items) => updateQueueItem(items, nextItem.id, {
-        status: 'failed',
-        error: message,
-      }));
-      if (nextItem.temporarySource) {
-        const nextSummary = {
-          ...remoteHlsBatchSummaryRef.current,
-          uploadFailed: remoteHlsBatchSummaryRef.current.uploadFailed + 1,
-        };
-        remoteHlsBatchSummaryRef.current = nextSummary;
-        setRemoteHlsBatchProgress(nextSummary);
-      }
-      if (nextItem.stopQueueAfterComplete) {
-        settleRemoteHlsUploadQueue();
-      }
-      setActiveUploadQueueItem(null);
-    });
-  }, [
-    queueReadiness.upload,
-    replaceUploadQueue,
-    setActiveUploadQueueItem,
-    uploadQueue,
   ]);
 
   useEffect(() => {
     if (
       !onzloadQueueRunning ||
       activeOnzloadQueueItemId ||
-      activeUploadQueueItemIdRef.current ||
-      isUploading ||
       isSubtitleExporting
     ) return;
     const nextItem = nextQueuedItem(onzloadQueue);
@@ -2010,7 +972,6 @@ export default function App() {
   }, [
     activeOnzloadQueueItemId,
     isSubtitleExporting,
-    isUploading,
     onzloadQueue,
     onzloadQueueRunning,
     onzloadSession.connected,
@@ -2027,42 +988,23 @@ export default function App() {
     setActiveVideoEncoderLabel('');
     setLogs([]);
     setErrorMessage('');
-    setUploadStatus('idle');
-    setUploadProgress(null);
-    setUploadDestination('');
-    setUploadPublicUrl('');
-    setUploadError('');
   };
 
   const openUploadTab = (sourcePath = '') => {
-    if (sourcePath) enqueueUploadPaths([sourcePath]);
-    setActiveTab('upload');
+    if (sourcePath) {
+      const added = enqueueOnzloadPath(sourcePath, media?.name ?? '');
+      if (added && onzloadSession.connected) setOnzloadQueueRunning(true);
+    }
+    setActiveTab('onzload');
   };
 
   const progressStyle = useMemo(
     () => ({ '--progress': `${progress?.percent ?? 0}%` }) as React.CSSProperties,
     [progress?.percent],
   );
-  const remoteHlsHasPendingUploads = remoteHlsBatchProgress.downloaded > remoteHlsBatchProgress.uploaded + remoteHlsBatchProgress.uploadFailed;
-  const remoteHlsWorkflowUploading = remoteHlsHasPendingUploads && (uploadQueueRunning || uploadStatus === 'uploading');
-  const remoteHlsDownloadingAndUploading = isRemoteHlsDownloading && remoteHlsWorkflowUploading;
-  const remoteHlsWorkflowSettled = remoteHlsStatus === 'success' && !uploadQueueRunning && !remoteHlsHasPendingUploads && ['success', 'failed'].includes(uploadStatus);
-  const remoteHlsBatchErrorCount = remoteHlsBatchProgress.failed + remoteHlsBatchProgress.uploadFailed;
-  const remoteHlsWorkflowPartial = remoteHlsWorkflowSettled && remoteHlsBatchProgress.uploaded > 0 && remoteHlsBatchErrorCount > 0;
-  const remoteHlsWorkflowCompleted = remoteHlsWorkflowSettled && remoteHlsBatchErrorCount === 0;
-  const remoteHlsWorkflowFailed = remoteHlsStatus === 'failed' || (remoteHlsWorkflowSettled && remoteHlsBatchProgress.uploaded === 0);
-  const remoteHlsWorkflowCancelled = remoteHlsStatus === 'cancelled' || (remoteHlsStatus === 'success' && uploadStatus === 'cancelled');
-  const remoteHlsWorkflowBusy = isRemoteHlsDownloading || remoteHlsWorkflowUploading;
-  const remoteHlsWorkflowFinished = remoteHlsWorkflowCompleted || remoteHlsWorkflowPartial;
-  const remoteHlsPublicResults = useMemo(() => {
-    const batchOrder = new Map(remoteHlsBatchSourcePaths.map((sourcePath, index) => [sourcePath, index]));
-    return uploadQueue
-      .filter((item) => batchOrder.has(item.sourcePath) && Boolean(item.publicUrl))
-      .sort((left, right) => (batchOrder.get(left.sourcePath) ?? 0) - (batchOrder.get(right.sourcePath) ?? 0));
-  }, [remoteHlsBatchSourcePaths, uploadQueue]);
-  const remoteHlsCurrentPosition = remoteHlsBatchProgress.total > 0
-    ? Math.min(remoteHlsBatchProgress.processed + 1, remoteHlsBatchProgress.total)
-    : 0;
+  const activeOnzloadItem = onzloadQueue.find((item) => item.status === 'running')
+    ?? [...onzloadQueue].reverse().find((item) => item.status === 'completed' || item.status === 'failed')
+    ?? null;
 
   return (
     <div
@@ -2106,32 +1048,18 @@ export default function App() {
           </button>
           <button
             type="button"
-            className={activeTab === 'upload' ? 'active' : ''}
+            className={activeTab === 'onzload' ? 'active' : ''}
             onClick={() => openUploadTab()}
           >
-            <CloudUpload size={13} /> Upload R2 / S3
-            {uploadQueueSummary.queued > 0 ? <b className="tab-queue-count">{uploadQueueSummary.queued}</b> : rcloneStatus.available && <i />}
-          </button>
-          <button
-            type="button"
-            className={activeTab === 'url-upload' ? 'active' : ''}
-            onClick={() => setActiveTab('url-upload')}
-          >
-            <Link2 size={13} /> Upload URL HLS
-            {isRemoteHlsDownloading && <LoaderCircle className="spin" size={11} />}
-          </button>
-          <button
-            type="button"
-            className={activeTab === 'storage' ? 'active' : ''}
-            onClick={() => setActiveTab('storage')}
-          >
-            <HardDrive size={13} /> Cloud Storage
-            {cloudActionBusy && <LoaderCircle className="spin" size={11} />}
+            <CloudUpload size={13} /> Upload OnzLoad
+            {onzloadQueueSummary.queued > 0
+              ? <b className="tab-queue-count">{onzloadQueueSummary.queued}</b>
+              : onzloadSession.connected && <i />}
           </button>
         </nav>
         <div className="privacy-note">
           <span className="privacy-dot" />
-          Cấu hình tự động lưu trên máy
+          Encode trên máy · lưu trên OnzLoad
         </div>
       </header>
 
@@ -2142,7 +1070,7 @@ export default function App() {
             <div>
               <span className="eyebrow">NEW ENCODE</span>
               <h1>Biến video thành HLS.</h1>
-              <p>Encode cục bộ, rồi tự đưa HLS lên OnzLoad hoặc storage bạn chọn.</p>
+              <p>Encode cục bộ, sau đó upload HLS thẳng lên tài khoản OnzLoad.</p>
             </div>
             <div className="step-indicator" aria-label="Bước một trên ba">
               <span className={media ? 'done' : 'active'}>{media ? <Check size={12} /> : '1'}</span>
@@ -2824,7 +1752,7 @@ export default function App() {
           <div className="action-bar">
             <div className="encode-summary">
               <span><ListOrdered size={14} /> {encodeQueueSummary.queued} chờ · {encodeQueueSummary.completed} xong · {encodeQueueSummary.failed} lỗi</span>
-              <small>{selectedPreset.name} · {renditionSummary(media, presetId)} · {selectedVideoEncoderLabel} · segment {segmentDuration}s{logoOverlay.enabled ? ` · logo ${logoOverlay.widthPercent}%` : ''}{hasCustomAdvancedSettings ? ' · nâng cao' : ''}{uploadAfterEncodeOnzload ? ' · tự tạo video OnzLoad' : uploadAfterEncode ? ' · upload cuốn chiếu' : ''}</small>
+              <small>{selectedPreset.name} · {renditionSummary(media, presetId)} · {selectedVideoEncoderLabel} · segment {segmentDuration}s{logoOverlay.enabled ? ` · logo ${logoOverlay.widthPercent}%` : ''}{hasCustomAdvancedSettings ? ' · nâng cao' : ''}{uploadAfterEncodeOnzload ? ' · tự tạo video OnzLoad' : ''}</small>
             </div>
             {encodeQueueRunning ? (
               <button className="cancel-button" type="button" onClick={cancelEncode}>
@@ -2915,9 +1843,9 @@ export default function App() {
                       <Folder size={16} /> Mở thư mục
                     </button>
                     <button className="go-upload-button" type="button" onClick={() => openUploadTab(outputPath)}>
-                      <CloudUpload size={15} /> Qua tab Upload
+                      <CloudUpload size={15} /> Upload lên OnzLoad
                     </button>
-                    <button type="button" onClick={resetJob} disabled={isUploading}>
+                    <button type="button" onClick={resetJob}>
                       <RotateCcw size={15} /> Video khác
                     </button>
                   </div>
@@ -2939,7 +1867,7 @@ export default function App() {
 
           <div className={`log-panel ${showLogs ? 'expanded' : ''}`}>
             <button className="log-toggle" type="button" onClick={() => setShowLogs((current) => !current)}>
-              <span><Terminal size={15} /> Nhật ký FFmpeg / rclone <em>{logs.length}</em></span>
+              <span><Terminal size={15} /> Nhật ký FFmpeg <em>{logs.length}</em></span>
               <ChevronDown size={16} />
             </button>
             {showLogs && (
@@ -2950,14 +1878,14 @@ export default function App() {
           </div>
         </aside>
       </main>
-      ) : activeTab === 'upload' ? (
-      <main className="workspace upload-workspace">
+      ) : activeTab === 'onzload' ? (
+      <main className="workspace upload-workspace onzload-only-workspace">
         <section className="config-panel upload-config-panel">
           <div className="section-heading hero-heading upload-hero-heading">
             <div>
-              <span className="eyebrow">ONZLOAD · RCLONE TRANSFER</span>
-              <h1>Đưa HLS lên OnzLoad.</h1>
-              <p>Đăng nhập tài khoản để app tự upload và tạo video, hoặc dùng remote R2 / S3 thủ công.</p>
+              <span className="eyebrow">ONZLOAD DESKTOP UPLOAD</span>
+              <h1>Encode xong, upload ngay.</h1>
+              <p>Không cần endpoint, bucket hay Access Key. OnzLoad tự chọn storage và tạo video.</p>
             </div>
             <CloudUpload className="upload-hero-icon" size={35} strokeWidth={1.35} />
           </div>
@@ -2965,10 +1893,10 @@ export default function App() {
           <div className="config-scroll upload-config-scroll">
             <section className="config-section onzload-section">
               <div className="config-label">
-                <span>ONZ</span>
+                <span>01</span>
                 <div>
-                  <h2>Tài khoản OnzLoad</h2>
-                  <p>Đăng nhập qua trình duyệt; app chỉ lưu token thiết bị đã mã hóa</p>
+                  <h2>Liên kết tài khoản OnzLoad</h2>
+                  <p>Đăng nhập qua trình duyệt; encoder chỉ lưu token thiết bị đã mã hóa</p>
                 </div>
               </div>
 
@@ -2981,47 +1909,84 @@ export default function App() {
                   </div>
                   {onzloadSession.connected && <em>ĐÃ KẾT NỐI</em>}
                 </div>
-                <div className="onzload-connect-row">
-                  <label>
-                    <span>Trang OnzLoad</span>
-                    <input
-                      type="url"
-                      value={onzloadBaseUrl}
-                      onChange={(event) => setOnzloadBaseUrl(event.target.value)}
-                      disabled={onzloadAuthBusy || onzloadSession.connected}
-                      spellCheck={false}
-                    />
-                  </label>
-                  <button type="button" onClick={() => void (onzloadSession.connected ? disconnectOnzload() : connectOnzload())} disabled={onzloadAuthBusy || onzloadQueueRunning}>
+                <div className="onzload-server-row">
+                  <div>
+                    <span>Máy chủ upload</span>
+                    <strong>{onzloadSession.baseUrl || 'https://onzload.com'}</strong>
+                    <small>Storage được quản lý tập trung trên OnzLoad</small>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void (onzloadSession.connected ? disconnectOnzload() : connectOnzload())}
+                    disabled={onzloadAuthBusy || onzloadQueueRunning}
+                  >
                     {onzloadAuthBusy ? <LoaderCircle className="spin" size={14} /> : onzloadSession.connected ? <X size={14} /> : <ExternalLink size={14} />}
-                    {onzloadAuthBusy ? 'Đang xử lý…' : onzloadSession.connected ? 'Ngắt liên kết' : 'Đăng nhập' }
+                    {onzloadAuthBusy ? 'Đang xử lý…' : onzloadSession.connected ? 'Đăng xuất' : 'Đăng nhập OnzLoad'}
                   </button>
                 </div>
-                <p className="onzload-session-message">{onzloadSession.message}{onzloadSession.capabilities ? ` · Tối đa ${onzloadSession.capabilities.upload.maxFileSizeLabel}/video` : ''}</p>
-                <div className="onzload-options-row">
-                  <label className="auto-upload-toggle">
-                    <input
-                      type="checkbox"
-                      checked={uploadAfterEncodeOnzload}
-                      onChange={(event) => {
-                        if (event.target.checked && !onzloadSession.connected) return;
-                        setUploadAfterEncodeOnzload(event.target.checked);
-                        if (event.target.checked) setUploadAfterEncode(false);
-                      }}
-                      disabled={encodeQueueRunning}
-                    />
-                    <span><b>Tự upload và tạo video sau mỗi encode</b><small>Ép đầu ra H.264/yuv420p + AAC stereo 48k tương thích OnzLoad</small></span>
-                  </label>
-                  <button type="button" className="onzload-upload-now" onClick={uploadCurrentFolderToOnzload} disabled={!onzloadSession.connected || !localHlsPath || onzloadQueueRunning}>
-                    <CloudUpload size={14} /> Upload folder hiện tại
+                <p className="onzload-session-message">
+                  {onzloadSession.message}
+                  {onzloadSession.capabilities ? ` · Tối đa ${onzloadSession.capabilities.upload.maxFileSizeLabel}/video` : ''}
+                </p>
+              </div>
+            </section>
+
+            <section className="config-section onzload-upload-section">
+              <div className="config-label">
+                <span>02</span>
+                <div>
+                  <h2>Encode rồi upload</h2>
+                  <p>Chọn tự động sau encode hoặc upload một thư mục HLS đã có</p>
+                </div>
+              </div>
+
+              <div className="onzload-simple-actions">
+                <label className="auto-upload-toggle">
+                  <input
+                    type="checkbox"
+                    checked={uploadAfterEncodeOnzload}
+                    onChange={(event) => {
+                      if (event.target.checked && !onzloadSession.connected) return;
+                      setUploadAfterEncodeOnzload(event.target.checked);
+                    }}
+                    disabled={encodeQueueRunning}
+                  />
+                  <span>
+                    <b>Tự upload và tạo video sau mỗi encode</b>
+                    <small>Đầu ra được chuẩn hóa H.264/yuv420p + AAC stereo 48 kHz theo OnzLoad</small>
+                  </span>
+                </label>
+                <div className="onzload-upload-buttons">
+                  <button
+                    type="button"
+                    onClick={() => void chooseAndUploadOnzloadFolders()}
+                    disabled={!onzloadSession.connected || onzloadQueueRunning}
+                  >
+                    <FolderOpen size={14} /> Chọn HLS và upload
                   </button>
+                  <button
+                    type="button"
+                    className="onzload-upload-now"
+                    onClick={uploadCurrentFolderToOnzload}
+                    disabled={!onzloadSession.connected || !localHlsPath || onzloadQueueRunning}
+                  >
+                    <CloudUpload size={14} /> Upload kết quả gần nhất
+                  </button>
+                </div>
+              </div>
+
+              <div className="onzload-security-note">
+                <ShieldCheck size={16} />
+                <div>
+                  <strong>Không có khóa hoặc cấu hình R2 trên máy người dùng</strong>
+                  <span>Mỗi video chỉ nhận quyền upload tạm thời cho đúng thư mục do OnzLoad cấp.</span>
                 </div>
               </div>
 
               {onzloadQueue.length > 0 && (
                 <div className="queue-card onzload-queue-card">
                   <div className="queue-card-heading">
-                    <span><ListOrdered size={14} /> OnzLoad queue <em>{onzloadQueue.length}</em></span>
+                    <span><ListOrdered size={14} /> Hàng đợi OnzLoad <em>{onzloadQueue.length}</em></span>
                     <div>
                       <small>{onzloadQueueSummary.finished}/{onzloadQueueSummary.total} đã xử lý</small>
                       {onzloadQueueRunning && <button type="button" onClick={() => void cancelOnzloadUpload()}><Pause size={12} /> Dừng</button>}
@@ -3034,7 +1999,7 @@ export default function App() {
                         <span className="queue-item-icon"><CloudUpload size={15} /></span>
                         <span className="queue-item-copy">
                           <strong title={item.sourcePath}>{item.originalName}</strong>
-                          <small title={item.destination || item.sourcePath}>{item.destination || baseNameOf(item.sourcePath)}</small>
+                          <small title={item.sourcePath}>{item.destination || baseNameOf(item.sourcePath)}</small>
                           {item.embedUrl && <small className="queue-public-url" title={item.embedUrl}>{item.embedUrl}</small>}
                           {item.status === 'running' && item.progress && <i><b style={{ width: `${item.progress.percent}%` }} /></i>}
                           {item.error && <small className="queue-item-error" title={item.error}>{item.error}</small>}
@@ -3047,354 +2012,42 @@ export default function App() {
                           {item.embedUrl && <button type="button" title="Sao chép link embed" onClick={() => void window.encoder.copyText(item.embedUrl)}><Copy size={12} /></button>}
                           {item.embedUrl && <button type="button" title="Mở video OnzLoad" onClick={() => void window.encoder.openExternal(item.embedUrl)}><ExternalLink size={12} /></button>}
                           {(item.status === 'failed' || item.status === 'cancelled') && <button type="button" title="Thử upload lại" onClick={() => retryOnzloadQueueItem(item.id)} disabled={onzloadQueueRunning}><RotateCcw size={12} /></button>}
-                          {item.status !== 'running' && <button type="button" title="Xóa khỏi queue" onClick={() => removeOnzloadQueueItem(item.id)} disabled={onzloadQueueRunning}><X size={12} /></button>}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                  {onzloadLogs.length > 0 && <code className="onzload-last-log">{onzloadLogs.at(-1)}</code>}
-                </div>
-              )}
-            </section>
-
-            <section className="config-section cloud-section">
-              <div className="cloud-heading">
-                <div className="config-label">
-                  <span>01</span>
-                  <div>
-                    <h2>Cấu hình rclone</h2>
-                    <p>Tạo mới hoặc cập nhật remote Cloudflare R2 / S3</p>
-                  </div>
-                </div>
-                <button className="rclone-refresh" type="button" onClick={() => void refreshRclone()} disabled={isUploading || isRcloneLoading}>
-                  <RefreshCw className={isRcloneLoading ? 'spin' : ''} size={13} /> Tải lại
-                </button>
-              </div>
-
-              <div className={`rclone-config-card ${rcloneStatus.available ? 'available' : 'unavailable'}`}>
-                <div className="rclone-status-line">
-                  {rcloneStatus.available ? <ShieldCheck size={15} /> : <AlertCircle size={15} />}
-                  <span>{isRcloneLoading ? 'Đang tìm rclone…' : rcloneStatus.message}</span>
-                  {rcloneStatus.version && <em>v{rcloneStatus.version}</em>}
-                </div>
-              </div>
-
-              <div className="remote-form-card">
-                <div className="remote-form-heading">
-                  <strong>Tạo / cập nhật remote</strong>
-                  <span>Remote trùng tên sẽ được cập nhật; các remote khác được giữ nguyên.</span>
-                </div>
-                <div className="remote-form-grid">
-                  <label>
-                    <span>Nhà cung cấp</span>
-                    <select
-                      value={remoteProvider}
-                      onChange={(event) => {
-                        const provider = event.target.value as RcloneProvider;
-                        setRemoteProvider(provider);
-                        setRemoteRegion(provider === 'AWS' ? 'us-east-1' : 'auto');
-                        setRemoteSaveStatus('idle');
-                        setRemoteSaveMessage('');
-                      }}
-                      disabled={remoteSaveStatus === 'saving' || isUploading}
-                    >
-                      <option value="Cloudflare">Cloudflare R2</option>
-                      <option value="AWS">Amazon S3</option>
-                      <option value="Other">S3 tương thích</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>Tên remote</span>
-                    <input
-                      value={remoteName}
-                      placeholder="dao-r2"
-                      onChange={(event) => { setRemoteName(event.target.value); setRemoteSaveStatus('idle'); }}
-                      disabled={remoteSaveStatus === 'saving' || isUploading}
-                      spellCheck={false}
-                    />
-                  </label>
-                  <label>
-                    <span>Access Key ID</span>
-                    <input
-                      value={remoteAccessKeyId}
-                      placeholder="Nhập Access Key ID"
-                      onChange={(event) => { setRemoteAccessKeyId(event.target.value); setRemoteSaveStatus('idle'); }}
-                      disabled={remoteSaveStatus === 'saving' || isUploading}
-                      autoComplete="off"
-                      spellCheck={false}
-                    />
-                  </label>
-                  <label>
-                    <span>Secret Access Key</span>
-                    <input
-                      type="password"
-                      value={remoteSecretAccessKey}
-                      placeholder="Không hiển thị lại sau khi lưu"
-                      onChange={(event) => { setRemoteSecretAccessKey(event.target.value); setRemoteSaveStatus('idle'); }}
-                      disabled={remoteSaveStatus === 'saving' || isUploading}
-                      autoComplete="new-password"
-                      spellCheck={false}
-                    />
-                  </label>
-                  <label className="endpoint-field">
-                    <span>Endpoint {remoteProvider === 'AWS' ? '(không bắt buộc)' : ''}</span>
-                    <input
-                      value={remoteEndpoint}
-                      placeholder={remoteProvider === 'Cloudflare' ? 'https://account-id.r2.cloudflarestorage.com' : 'https://s3.example.com'}
-                      onChange={(event) => { setRemoteEndpoint(event.target.value); setRemoteSaveStatus('idle'); }}
-                      disabled={remoteSaveStatus === 'saving' || isUploading}
-                      spellCheck={false}
-                    />
-                  </label>
-                  <label>
-                    <span>Region</span>
-                    <input
-                      value={remoteRegion}
-                      placeholder={remoteProvider === 'AWS' ? 'us-east-1' : 'auto'}
-                      onChange={(event) => { setRemoteRegion(event.target.value); setRemoteSaveStatus('idle'); }}
-                      disabled={remoteSaveStatus === 'saving' || isUploading}
-                      spellCheck={false}
-                    />
-                  </label>
-                </div>
-                <div className="remote-save-row">
-                  <span className={`remote-save-feedback ${remoteSaveStatus}`}>
-                    {remoteSaveMessage || 'Secret được rclone làm mờ trước khi ghi vào rclone.conf.'}
-                  </span>
-                  <button type="button" onClick={saveRemote} disabled={!remoteCanSave}>
-                    {remoteSaveStatus === 'saving' ? <LoaderCircle className="spin" size={14} /> : <ShieldCheck size={14} />}
-                    {remoteSaveStatus === 'saving' ? 'Đang lưu…' : 'Lưu remote'}
-                  </button>
-                </div>
-              </div>
-            </section>
-
-            <section className="config-section">
-              <div className="config-label">
-                <span>02</span>
-                <div>
-                  <h2>HLS local & upload queue</h2>
-                  <p>Chọn nhiều folder có master.m3u8; app upload tuần tự</p>
-                </div>
-              </div>
-              <button className="path-picker hls-path-picker" type="button" onClick={chooseHlsFolder} disabled={isUploading || status === 'encoding'}>
-                <FolderOpen size={18} />
-                <span title={localHlsPath}>{localHlsPath || 'Chọn một hoặc nhiều thư mục HLS trên máy'}</span>
-                <em>Duyệt</em>
-              </button>
-              {outputPath && outputPath !== localHlsPath && (
-                <button className="use-latest-output" type="button" onClick={() => enqueueUploadPaths([outputPath])}>
-                  + Thêm kết quả encode gần nhất vào queue
-                </button>
-              )}
-
-              {uploadQueue.length > 0 && (
-                <div className="queue-card upload-queue-card">
-                  <div className="queue-card-heading">
-                    <span><ListOrdered size={14} /> Upload queue <em>{uploadQueue.length}</em></span>
-                    <div>
-                      <small>{uploadQueueSummary.finished}/{uploadQueueSummary.total} đã xử lý</small>
-                      <button type="button" onClick={chooseHlsFolder} disabled={isBusy}><Plus size={12} /> Thêm</button>
-                    </div>
-                  </div>
-                  <div className="queue-list">
-                    {uploadQueue.map((item, index) => (
-                      <div key={item.id} className={`queue-item ${item.status}`}>
-                        <span className="queue-order">{String(index + 1).padStart(2, '0')}</span>
-                        <span className="queue-item-icon">{item.temporarySource ? <Link2 size={15} /> : <Folder size={15} />}</span>
-                        <span className="queue-item-copy">
-                          <strong title={item.sourcePath}>{baseNameOf(item.sourcePath)}</strong>
-                          <small title={item.destination || undefined}>
-                            {item.destination || (item.config ? `${item.config.remoteName}:${item.config.destinationPath}` : 'Dùng cấu hình đích hiện tại')}
-                          </small>
-                          {item.temporarySource && <small>Nguồn URL · tự xóa bản tạm sau khi upload thành công</small>}
-                          {item.publicUrl && <small className="queue-public-url" title={item.publicUrl}>{item.publicUrl}</small>}
-                          {item.status === 'running' && item.progress && (
-                            <i><b style={{ width: `${item.progress.percent}%` }} /></i>
-                          )}
-                          {item.error && <small className="queue-item-error" title={item.error}>{item.error}</small>}
-                        </span>
-                        <span className={`queue-item-status ${item.status}`}>
-                          {item.status === 'running' && <LoaderCircle className="spin" size={10} />}
-                          {queueStatusLabel(item.status)}
-                        </span>
-                        <span className="queue-item-actions">
-                          {item.status === 'completed' && !item.temporarySource && (
-                            <button type="button" title="Mở thư mục local" onClick={() => window.encoder.revealInFolder(item.sourcePath)}>
-                              <FolderOpen size={12} />
-                            </button>
-                          )}
-                          {item.publicUrl && (
-                            <button type="button" title="Sao chép URL master.m3u8" onClick={() => void copyPublicUrl(item.publicUrl)}>
-                              {copiedPublicUrl === item.publicUrl ? <Check size={12} /> : <Copy size={12} />}
-                            </button>
-                          )}
-                          {item.publicUrl && (
-                            <button type="button" title="Mở URL public" onClick={() => void window.encoder.openExternal(item.publicUrl)}>
-                              <ExternalLink size={12} />
-                            </button>
-                          )}
-                          {(item.status === 'failed' || item.status === 'cancelled') && (
-                            <button type="button" title="Đưa lại vào queue" onClick={() => retryUploadQueueItem(item.id)} disabled={uploadQueueRunning}>
-                              <RotateCcw size={12} />
-                            </button>
-                          )}
-                          {item.status !== 'running' && (
-                            <button type="button" title="Xóa khỏi queue" onClick={() => removeUploadQueueItem(item.id)} disabled={uploadQueueRunning}>
-                              <X size={12} />
-                            </button>
-                          )}
+                          {item.status !== 'running' && <button type="button" title="Xóa khỏi hàng đợi" onClick={() => removeOnzloadQueueItem(item.id)} disabled={onzloadQueueRunning}><X size={12} /></button>}
                         </span>
                       </div>
                     ))}
                   </div>
                 </div>
               )}
-            </section>
-
-            <section className="config-section destination-section">
-              <div className="config-label">
-                <span>03</span>
-                <div>
-                  <h2>Đích upload</h2>
-                  <p>Chọn remote và nhập bucket / thư mục chứa HLS</p>
-                </div>
-              </div>
-
-              {rcloneStatus.remotes.length > 0 ? (
-                <div className="rclone-fields destination-fields">
-                  <label>
-                    <span>Remote</span>
-                    <select
-                      value={selectedRemote}
-                      onChange={(event) => {
-                        setSelectedRemote(event.target.value);
-                        setTargetCheckStatus('idle');
-                        setTargetCheckMessage('');
-                      }}
-                      disabled={isUploading}
-                    >
-                      {rcloneStatus.remotes.map((remote) => (
-                        <option key={remote.name} value={remote.name}>{remote.name} · {remote.type}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span>Bucket / thư mục</span>
-                    <input
-                      type="text"
-                      value={remoteDestinationPath}
-                      placeholder="ten-bucket/hls"
-                      onChange={(event) => {
-                        setRemoteDestinationPath(event.target.value);
-                        setTargetCheckStatus('idle');
-                        setTargetCheckMessage('');
-                      }}
-                      disabled={isUploading}
-                      spellCheck={false}
-                    />
-                  </label>
-                  <label className="public-url-field">
-                    <span>URL public / CDN của bucket (không bắt buộc)</span>
-                    <input
-                      type="url"
-                      value={publicBaseUrl}
-                      placeholder="https://cdn.daophim.space"
-                      onChange={(event) => changePublicBaseUrl(event.target.value)}
-                      disabled={isUploading}
-                      spellCheck={false}
-                    />
-                  </label>
-                </div>
-              ) : (
-                <div className="no-remote-message"><AlertCircle size={15} /> Hãy tạo remote ở bước 01 trước khi chọn đích.</div>
-              )}
-
-              <div className="upload-performance-block">
-                <div className="upload-performance-heading">
-                  <span><Gauge size={13} /> Tốc độ upload</span>
-                  <small>{selectedUploadPerformance.transfers} file song song · {selectedUploadPerformance.checkers} checkers</small>
-                </div>
-                <div className="upload-performance-options">
-                  {RCLONE_UPLOAD_PERFORMANCE_PROFILES.map((profile) => (
-                    <button
-                      key={profile.id}
-                      type="button"
-                      className={uploadPerformanceId === profile.id ? 'selected' : ''}
-                      onClick={() => setUploadPerformanceId(profile.id)}
-                      disabled={isUploading || uploadQueueRunning}
-                    >
-                      <strong>{profile.name}</strong>
-                      <span>{profile.transfers} luồng</span>
-                      <small>{profile.description}</small>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="rclone-options-row">
-                <label className="auto-upload-toggle">
-                  <input
-                    type="checkbox"
-                    checked={uploadAfterEncode}
-                    onChange={(event) => {
-                      setUploadAfterEncode(event.target.checked);
-                      if (event.target.checked) setUploadAfterEncodeOnzload(false);
-                    }}
-                    disabled={isUploading || encodeQueueRunning || !uploadConfigured}
-                  />
-                  <span><b>Upload ngay sau mỗi video encode xong</b><small>Upload chạy song song khi encode queue xử lý video kế tiếp</small></span>
-                </label>
-                <button
-                  className="test-target-button"
-                  type="button"
-                  onClick={testUploadTarget}
-                  disabled={isUploading || targetCheckStatus === 'checking' || !uploadConfigured}
-                >
-                  {targetCheckStatus === 'checking' ? <LoaderCircle className="spin" size={13} /> : <ShieldCheck size={13} />}
-                  Kiểm tra kết nối
-                </button>
-              </div>
-
-              <div className={`rclone-feedback ${targetCheckStatus}`}>
-                <code title={destinationPreview}>{destinationPreview}</code>
-                {targetCheckMessage && <span>{targetCheckMessage}</span>}
-              </div>
-              <div className={`public-url-preview ${publicBaseUrlError ? 'failed' : publicUrlPreview ? 'ready' : ''}`}>
-                <Link2 size={12} />
-                <div>
-                  <span>URL master.m3u8 sau upload</span>
-                  <code title={publicUrlPreview || publicBaseUrlError || undefined}>
-                    {publicBaseUrlError || publicUrlPreview || 'Nhập custom domain hoặc URL r2.dev public của bucket để xuất link.'}
-                  </code>
-                </div>
-                <button
-                  className="copy-preview-url-button"
-                  type="button"
-                  onClick={() => void copyPublicUrl(publicUrlPreview)}
-                  disabled={!publicUrlPreview || Boolean(publicBaseUrlError)}
-                  title="Sao chép URL master.m3u8"
-                  aria-label="Sao chép URL master.m3u8"
-                >
-                  {copiedPublicUrl === publicUrlPreview ? <Check size={12} /> : <Copy size={12} />}
-                  {copiedPublicUrl === publicUrlPreview ? 'Đã copy' : 'Copy URL'}
-                </button>
-              </div>
             </section>
           </div>
 
           <div className="action-bar upload-action-bar">
             <div className="encode-summary">
-              <span><ListOrdered size={14} /> {uploadQueueSummary.queued} chờ · {uploadQueueSummary.completed} xong · {uploadQueueSummary.failed} lỗi</span>
-              <small title={destinationPreview}>{uploadConfigured ? `${destinationPreview} · ${selectedUploadPerformance.name} ${selectedUploadPerformance.transfers} luồng` : 'Cần remote và bucket / thư mục đích'}</small>
+              <span><ListOrdered size={14} /> {onzloadQueueSummary.queued} chờ · {onzloadQueueSummary.completed} xong · {onzloadQueueSummary.failed} lỗi</span>
+              <small>{onzloadSession.connected ? 'OnzLoad tự quản lý R2 và tự tạo database sau upload' : 'Đăng nhập OnzLoad để bắt đầu upload'}</small>
             </div>
-            {uploadQueueRunning ? (
-              <button className="cancel-button" type="button" onClick={cancelRcloneUpload}>
-                <Pause size={15} fill="currentColor" /> Dừng queue
+            {onzloadQueueRunning ? (
+              <button className="cancel-button" type="button" onClick={() => void cancelOnzloadUpload()}>
+                <Pause size={15} fill="currentColor" /> Dừng upload
+              </button>
+            ) : onzloadQueueSummary.queued > 0 ? (
+              <button
+                className="start-button upload-start-button"
+                type="button"
+                onClick={() => setOnzloadQueueRunning(true)}
+                disabled={!onzloadSession.connected}
+              >
+                <CloudUpload size={17} /> Upload hàng đợi ({onzloadQueueSummary.queued})
               </button>
             ) : (
-              <button className="start-button upload-start-button" type="button" disabled={!canUpload} onClick={startRcloneUpload}>
-                <CloudUpload size={17} /> Chạy upload queue ({uploadQueueSummary.queued})
+              <button
+                className="start-button upload-start-button"
+                type="button"
+                onClick={() => void chooseAndUploadOnzloadFolders()}
+                disabled={!onzloadSession.connected}
+              >
+                <CloudUpload size={17} /> Chọn HLS để upload
               </button>
             )}
           </div>
@@ -3403,667 +2056,80 @@ export default function App() {
         <aside className="status-panel upload-status-panel">
           <div className="status-heading">
             <div>
-              <span className="eyebrow">UPLOAD STATUS</span>
-              <h2>Tiến trình upload queue</h2>
+              <span className="eyebrow">ONZLOAD STATUS</span>
+              <h2>Tiến trình upload</h2>
             </div>
-            <span className={`status-chip ${uploadQueueRunning || uploadStatus === 'uploading' ? 'encoding' : uploadStatus === 'success' ? 'completed' : uploadStatus === 'failed' ? 'failed' : uploadStatus === 'cancelled' ? 'cancelled' : 'idle'}`}>
+            <span className={`status-chip ${activeOnzloadItem?.status === 'running' ? 'encoding' : activeOnzloadItem?.status ?? 'idle'}`}>
               <i />
-              {uploadQueueRunning
-                ? `${uploadQueueSummary.finished + uploadQueueSummary.running}/${uploadQueueSummary.total} ĐANG CHẠY`
-                : uploadStatus === 'success'
-                  ? 'HOÀN TẤT'
-                  : uploadStatus === 'failed'
-                    ? 'CÓ LỖI'
-                    : uploadStatus === 'cancelled'
-                      ? 'ĐÃ HỦY'
-                      : 'CHỜ TÁC VỤ'}
+              {activeOnzloadItem ? queueStatusLabel(activeOnzloadItem.status).toUpperCase() : 'CHỜ TÁC VỤ'}
             </span>
           </div>
 
           <div className="status-content upload-status-content">
-            <div className={`upload-visual-state ${uploadStatus}`}>
+            <div className={`upload-visual-state ${activeOnzloadItem?.status === 'completed' ? 'success' : activeOnzloadItem?.status ?? 'idle'}`}>
               <div className="upload-cloud-orbit">
-                {uploadStatus === 'uploading'
+                {activeOnzloadItem?.status === 'running'
                   ? <LoaderCircle className="spin" size={35} />
-                  : uploadStatus === 'success'
+                  : activeOnzloadItem?.status === 'completed'
                     ? <CheckCircle2 size={35} />
-                    : uploadStatus === 'failed'
+                    : activeOnzloadItem?.status === 'failed'
                       ? <AlertCircle size={35} />
                       : <CloudUpload size={35} />}
               </div>
-              <span>{uploadStatus === 'uploading' ? 'Đang chuyển dữ liệu' : uploadStatus === 'success' ? 'Upload thành công' : uploadStatus === 'failed' ? 'Upload thất bại' : 'Sẵn sàng upload'}</span>
-              <h3 title={localHlsPath}>{localHlsPath ? baseNameOf(localHlsPath) : 'Chọn thư mục HLS local'}</h3>
-              <p title={uploadDestination || destinationPreview}>
-                {uploadStatus === 'success'
-                  ? `Đã upload tới ${uploadDestination}`
-                  : uploadStatus === 'failed'
-                    ? uploadError
-                    : uploadStatus === 'cancelled'
-                      ? 'Upload đã dừng; file local vẫn được giữ nguyên.'
-                      : uploadConfigured
-                        ? destinationPreview
-                        : 'Cấu hình remote và bucket ở bảng bên trái.'}
-              </p>
+              <span>{activeOnzloadItem?.status === 'running' ? 'Đang upload lên OnzLoad' : activeOnzloadItem?.status === 'completed' ? 'Video đã sẵn sàng' : activeOnzloadItem?.status === 'failed' ? 'Upload chưa hoàn tất' : 'Sẵn sàng upload'}</span>
+              <h3 title={activeOnzloadItem?.sourcePath}>{activeOnzloadItem?.originalName || 'Encode một video để bắt đầu'}</h3>
+              <p>{activeOnzloadItem?.error || (onzloadSession.connected ? 'OnzLoad sẽ tự chọn storage, kiểm tra file và tạo video.' : 'Hãy đăng nhập tài khoản OnzLoad.')}</p>
             </div>
 
-            {uploadProgress && (uploadStatus === 'uploading' || uploadStatus === 'success') && (
+            {activeOnzloadItem?.progress && (
               <div className="upload-progress-card">
                 <div className="upload-progress-number">
-                  <strong>{Math.round(uploadProgress.percent)}%</strong>
-                  <span>{uploadProgress.files} / {uploadProgress.totalFiles || '—'} file</span>
+                  <strong>{Math.round(activeOnzloadItem.progress.percent)}%</strong>
+                  <span>{activeOnzloadItem.progress.files} / {activeOnzloadItem.progress.totalFiles || '—'} file</span>
                 </div>
-                <div className="upload-progress-track"><span style={{ width: `${uploadProgress.percent}%` }} /></div>
+                <div className="upload-progress-track"><span style={{ width: `${activeOnzloadItem.progress.percent}%` }} /></div>
                 <div className="upload-progress-meta">
-                  <span>{formatBytes(uploadProgress.bytes)} / {uploadProgress.totalBytes ? formatBytes(uploadProgress.totalBytes) : 'đang tính'}</span>
-                  <span>{formatBytes(uploadProgress.speedBytesPerSecond)}/s</span>
-                  <span>ETA {formatDuration(uploadProgress.etaSeconds)}</span>
+                  <span>{formatBytes(activeOnzloadItem.progress.bytes)} / {activeOnzloadItem.progress.totalBytes ? formatBytes(activeOnzloadItem.progress.totalBytes) : 'đang tính'}</span>
+                  <span>{formatBytes(activeOnzloadItem.progress.speedBytesPerSecond)}/s</span>
+                  <span>ETA {formatDuration(activeOnzloadItem.progress.etaSeconds)}</span>
                 </div>
               </div>
             )}
 
-            {uploadStatus === 'success' && uploadPublicUrl && (
+            {activeOnzloadItem?.embedUrl && (
               <div className="public-url-result">
                 <div>
-                  <span><Link2 size={12} /> URL R2 public · master.m3u8</span>
-                  <code title={uploadPublicUrl}>{uploadPublicUrl}</code>
+                  <span><CheckCircle2 size={12} /> Video OnzLoad đã được tạo</span>
+                  <code title={activeOnzloadItem.embedUrl}>{activeOnzloadItem.embedUrl}</code>
                 </div>
                 <span className="public-url-actions">
-                  <button type="button" onClick={() => void copyPublicUrl(uploadPublicUrl)}>
-                    {copiedPublicUrl === uploadPublicUrl ? <Check size={13} /> : <Copy size={13} />}
-                    {copiedPublicUrl === uploadPublicUrl ? 'Đã sao chép' : 'Sao chép'}
-                  </button>
-                  <button type="button" onClick={() => void window.encoder.openExternal(uploadPublicUrl)}>
-                    <ExternalLink size={13} /> Mở URL
-                  </button>
+                  <button type="button" onClick={() => void window.encoder.copyText(activeOnzloadItem.embedUrl)}><Copy size={13} /> Sao chép</button>
+                  <button type="button" onClick={() => void window.encoder.openExternal(activeOnzloadItem.embedUrl)}><ExternalLink size={13} /> Mở video</button>
                 </span>
               </div>
             )}
 
-            <div className="upload-route-card">
-              <div><span>Nguồn local</span><strong title={localHlsPath}>{localHlsPath || 'Chưa chọn'}</strong></div>
+            <div className="upload-route-card onzload-route-card">
+              <div><span>Máy người dùng</span><strong>Encode HLS</strong></div>
               <i />
-              <div><span>Đích rclone</span><strong title={destinationPreview}>{uploadConfigured ? destinationPreview : 'Chưa cấu hình'}</strong></div>
+              <div><span>OnzLoad</span><strong>Upload · Storage · Database</strong></div>
             </div>
           </div>
 
           <div className={`log-panel ${showLogs ? 'expanded' : ''}`}>
             <button className="log-toggle" type="button" onClick={() => setShowLogs((current) => !current)}>
-              <span><Terminal size={15} /> Nhật ký rclone <em>{uploadLogs.length}</em></span>
+              <span><Terminal size={15} /> Nhật ký upload <em>{onzloadLogs.length}</em></span>
               <ChevronDown size={16} />
             </button>
             {showLogs && (
               <div className="log-output" ref={logOutputRef}>
-                {uploadLogs.length === 0 ? <span className="log-empty">Chưa có dữ liệu log.</span> : uploadLogs.map((line, index) => <code key={`${index}-${line}`}>{line}</code>)}
+                {onzloadLogs.length === 0 ? <span className="log-empty">Chưa có dữ liệu log.</span> : onzloadLogs.map((line, index) => <code key={`${index}-${line}`}>{line}</code>)}
               </div>
             )}
           </div>
         </aside>
       </main>
-      ) : activeTab === 'url-upload' ? (
-      <main className="workspace upload-workspace url-upload-workspace">
-        <section className="config-panel upload-config-panel">
-          <div className="section-heading hero-heading upload-hero-heading url-upload-hero">
-            <div>
-              <span className="eyebrow">REMOTE HLS MIRROR</span>
-              <h1>Upload nhiều URL HLS.</h1>
-              <p>Mỗi dòng một playlist .m3u8; kiểm tra xong danh sách rồi chủ động bấm Upload.</p>
-            </div>
-            <Link2 className="upload-hero-icon" size={35} strokeWidth={1.35} />
-          </div>
-
-          <div className="config-scroll url-upload-config-scroll">
-            <section className="config-section url-source-section">
-              <div className="config-label">
-                <span>01</span>
-                <div>
-                  <h2>Danh sách URL HLS nguồn</h2>
-                  <p>Mỗi dòng một link · app chỉ chạy sau khi bạn bấm Upload</p>
-                </div>
-              </div>
-
-              <div className={`remote-hls-import url-hls-import ${remoteHlsStatus}`}>
-                <div className="remote-hls-import-heading">
-                  <span><Link2 size={14} /> Batch playlist cần đưa lên storage</span>
-                  <small>URL/token không được lưu</small>
-                </div>
-                <div className="url-hls-folder-field">
-                  <label>
-                    <span>Tiền tố folder trên storage (không bắt buộc)</span>
-                    <input
-                      value={remoteHlsFolderName}
-                      placeholder="ten-phim-hls · nhiều link sẽ thêm -01, -02…"
-                      onChange={(event) => setRemoteHlsFolderName(event.target.value)}
-                      disabled={remoteHlsWorkflowBusy}
-                      autoComplete="off"
-                      spellCheck={false}
-                    />
-                  </label>
-                </div>
-                <label className="url-hls-main-field">
-                  <span>Danh sách playlist .m3u8 · mỗi dòng một link</span>
-                  <textarea
-                    value={remoteHlsUrl}
-                    placeholder={'https://cdn.example.com/phim-01/master.m3u8\nhttps://cdn.example.com/phim-02/master.m3u8'}
-                    onChange={(event) => {
-                      setRemoteHlsUrl(event.target.value);
-                      if (!remoteHlsWorkflowBusy) {
-                        setRemoteHlsStatus('idle');
-                        setRemoteHlsProgress(null);
-                        setRemoteHlsMessage('');
-                        const emptyBatchProgress = { total: 0, processed: 0, downloaded: 0, failed: 0, uploaded: 0, uploadFailed: 0 };
-                        remoteHlsBatchSummaryRef.current = emptyBatchProgress;
-                        setRemoteHlsBatchProgress(emptyBatchProgress);
-                        setRemoteHlsBatchSourcePaths([]);
-                        setUploadStatus('idle');
-                        setUploadProgress(null);
-                        setUploadPublicUrl('');
-                        setUploadError('');
-                      }
-                    }}
-                    disabled={remoteHlsWorkflowBusy}
-                    autoComplete="off"
-                    spellCheck={false}
-                    rows={6}
-                  />
-                </label>
-
-                <div className="remote-hls-import-actions url-hls-auto-row">
-                  <span className={`remote-hls-feedback ${remoteHlsWorkflowFailed ? 'failed' : remoteHlsWorkflowCompleted ? 'success' : remoteHlsStatus}`} title={remoteHlsMessage || undefined}>
-                    {isRemoteHlsDownloading && remoteHlsProgress
-                      ? `Link ${remoteHlsCurrentPosition}/${remoteHlsBatchProgress.total} · ${remoteHlsProgress.completedFiles}/${remoteHlsProgress.discoveredFiles} file · đã upload ${remoteHlsBatchProgress.uploaded}`
-                      : remoteHlsWorkflowUploading
-                        ? `Đã tải ${remoteHlsBatchProgress.downloaded}/${remoteHlsBatchProgress.total} link · đang upload bằng rclone…`
-                        : remoteHlsWorkflowPartial
-                          ? `Hoàn tất một phần: ${remoteHlsBatchProgress.uploaded}/${remoteHlsBatchProgress.total} HLS đã upload.`
-                        : remoteHlsWorkflowCompleted
-                          ? `Hoàn tất tải và upload ${remoteHlsBatchProgress.total} HLS lên storage.`
-                          : remoteHlsMessage || (remoteHlsUrl
-                            ? remoteHlsUrlIsValid
-                              ? uploadConfigured
-                                ? `${parsedRemoteHlsUrls.length} URL hợp lệ · bấm Upload để bắt đầu.`
-                                : 'Chưa có remote hoặc bucket đích. Hãy cấu hình storage ở bước 02.'
-                              : `${invalidRemoteHlsUrlCount} dòng không hợp lệ · URL phải dùng HTTP/HTTPS và kết thúc bằng .m3u8.`
-                            : 'Dán một hoặc nhiều URL HLS vào ô trên, sau đó bấm Upload.')}
-                  </span>
-                  <span className={`url-auto-badge ${remoteHlsUrlIsValid && uploadConfigured ? 'ready' : ''}`}>
-                    <Zap size={11} /> {remoteHlsUrlIsValid && uploadConfigured ? 'SẴN SÀNG' : 'CHỜ'} · {parsedRemoteHlsUrls.length || 0} LINK
-                  </span>
-                </div>
-                {isRemoteHlsDownloading && (
-                  <div className="remote-hls-progress" aria-label={remoteHlsMessage}><span /></div>
-                )}
-              </div>
-            </section>
-
-            <section className="config-section destination-section url-storage-section">
-              <div className="config-label">
-                <span>02</span>
-                <div>
-                  <h2>Storage đích</h2>
-                  <p>Dùng cấu hình rclone đã lưu trong tab Upload R2 / S3</p>
-                </div>
-              </div>
-
-              {rcloneStatus.remotes.length > 0 ? (
-                <>
-                  <div className="rclone-fields destination-fields">
-                    <label>
-                      <span>Remote</span>
-                      <select
-                        value={selectedRemote}
-                        onChange={(event) => setSelectedRemote(event.target.value)}
-                        disabled={remoteHlsWorkflowBusy}
-                      >
-                        {rcloneStatus.remotes.map((remote) => (
-                          <option key={remote.name} value={remote.name}>{remote.name} · {remote.type}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      <span>Bucket / thư mục</span>
-                      <input
-                        value={remoteDestinationPath}
-                        placeholder="ten-bucket/media"
-                        onChange={(event) => setRemoteDestinationPath(event.target.value)}
-                        disabled={remoteHlsWorkflowBusy}
-                        spellCheck={false}
-                      />
-                    </label>
-                    <label className="public-url-field">
-                      <span>URL public / CDN (không bắt buộc)</span>
-                      <input
-                        type="url"
-                        value={publicBaseUrl}
-                        placeholder="https://cdn.daophim.space"
-                        onChange={(event) => changePublicBaseUrl(event.target.value)}
-                        disabled={remoteHlsWorkflowBusy}
-                        spellCheck={false}
-                      />
-                    </label>
-                  </div>
-
-                  <div className="url-storage-actions">
-                    <div>
-                      <span>Đích tự động</span>
-                      <code title={destinationPreview}>{destinationPreview}</code>
-                    </div>
-                    <button type="button" onClick={testUploadTarget} disabled={!uploadConfigured || remoteHlsWorkflowBusy || targetCheckStatus === 'checking'}>
-                      {targetCheckStatus === 'checking' ? <LoaderCircle className="spin" size={12} /> : <ShieldCheck size={12} />}
-                      Kiểm tra storage
-                    </button>
-                  </div>
-                  {targetCheckMessage && <div className={`url-storage-feedback ${targetCheckStatus}`}>{targetCheckMessage}</div>}
-                </>
-              ) : (
-                <div className="url-storage-empty">
-                  <AlertCircle size={18} />
-                  <div><strong>Chưa có remote rclone</strong><span>Tạo remote R2/S3 trước khi dùng upload tự động.</span></div>
-                  <button type="button" onClick={() => setActiveTab('upload')}>Qua tab cấu hình</button>
-                </div>
-              )}
-
-              <div className="url-upload-flow">
-                <span><Download size={13} /><b>1. Tải HLS</b><small>playlist + segment + key</small></span>
-                <i />
-                <span><ListOrdered size={13} /><b>2. Tạo queue</b><small>giữ nguyên cây thư mục</small></span>
-                <i />
-                <span><CloudUpload size={13} /><b>3. Upload cuốn chiếu</b><small>{selectedUploadPerformance.name} · {selectedUploadPerformance.transfers} luồng</small></span>
-              </div>
-            </section>
-          </div>
-
-          <div className="action-bar upload-action-bar url-upload-action-bar">
-            <div className="encode-summary">
-              <span><Link2 size={14} /> {remoteHlsWorkflowCompleted ? 'Upload batch HLS hoàn tất' : remoteHlsWorkflowPartial ? 'Batch HLS hoàn tất một phần' : remoteHlsWorkflowBusy ? 'Đang xử lý batch URL HLS' : remoteHlsUrlIsValid ? 'Danh sách đã sẵn sàng' : 'Chờ danh sách URL HLS'}</span>
-              <small>{uploadConfigured ? `${selectedRemote}:${remoteDestinationPath} · ${parsedRemoteHlsUrls.length || 0} link trong danh sách` : 'Cần cấu hình remote và bucket / thư mục đích'}</small>
-            </div>
-            {isRemoteHlsDownloading ? (
-              <button className="cancel-button" type="button" onClick={cancelRemoteHlsDownload}>
-                <Square size={14} fill="currentColor" /> Hủy batch
-              </button>
-            ) : remoteHlsWorkflowUploading ? (
-              <button className="cancel-button" type="button" onClick={cancelRcloneUpload}>
-                <Pause size={14} fill="currentColor" /> Dừng upload
-              </button>
-            ) : (
-              <button
-                className="start-button upload-start-button"
-                type="button"
-                disabled={!remoteHlsUrlIsValid || !uploadConfigured || isBusy || Boolean(publicBaseUrlError)}
-                onClick={() => void startRemoteHlsDownload()}
-              >
-                <CloudUpload size={16} /> Bắt đầu upload {parsedRemoteHlsUrls.length || ''} link
-              </button>
-            )}
-          </div>
-        </section>
-
-        <aside className="status-panel upload-status-panel url-upload-status-panel">
-          <div className="status-heading">
-            <div>
-              <span className="eyebrow">URL HLS STATUS</span>
-              <h2>Tiến trình batch URL HLS</h2>
-            </div>
-            <span className={`status-chip ${remoteHlsWorkflowBusy ? 'encoding' : remoteHlsWorkflowCompleted ? 'completed' : remoteHlsWorkflowPartial || remoteHlsWorkflowFailed ? 'failed' : remoteHlsWorkflowCancelled ? 'cancelled' : 'idle'}`}>
-              <i />
-              {remoteHlsDownloadingAndUploading
-                  ? 'TẢI + UPLOAD'
-                : isRemoteHlsDownloading
-                  ? 'ĐANG TẢI HLS'
-                : remoteHlsWorkflowUploading
-                  ? 'ĐANG UPLOAD'
-                  : remoteHlsWorkflowPartial
-                    ? 'MỘT PHẦN'
-                    : remoteHlsWorkflowCompleted
-                    ? 'HOÀN TẤT'
-                    : remoteHlsWorkflowFailed
-                      ? 'CÓ LỖI'
-                      : remoteHlsWorkflowCancelled
-                        ? 'ĐÃ HỦY'
-                        : remoteHlsUrlIsValid && uploadConfigured
-                          ? 'SẴN SÀNG'
-                          : 'CHỜ URL'}
-            </span>
-          </div>
-
-          <div className="status-content upload-status-content url-upload-status-content">
-            <div className={`upload-visual-state ${remoteHlsWorkflowCompleted ? 'success' : remoteHlsWorkflowPartial || remoteHlsWorkflowFailed ? 'failed' : remoteHlsWorkflowBusy ? 'uploading' : 'idle'}`}>
-              <div className="upload-cloud-orbit">
-                {remoteHlsWorkflowBusy
-                  ? <LoaderCircle className="spin" size={35} />
-                  : remoteHlsWorkflowCompleted
-                    ? <CheckCircle2 size={35} />
-                    : remoteHlsWorkflowPartial || remoteHlsWorkflowFailed
-                      ? <AlertCircle size={35} />
-                      : <Link2 size={35} />}
-              </div>
-              <span>{remoteHlsDownloadingAndUploading ? `Tải link ${remoteHlsCurrentPosition}/${remoteHlsBatchProgress.total} · upload song song` : isRemoteHlsDownloading ? `Đang tải link ${remoteHlsCurrentPosition}/${remoteHlsBatchProgress.total}` : remoteHlsWorkflowUploading ? 'Đang chuyển batch lên storage' : remoteHlsWorkflowCompleted ? 'Đã upload toàn bộ' : remoteHlsWorkflowPartial ? 'Đã upload một phần' : remoteHlsWorkflowFailed ? 'Không thể hoàn tất' : remoteHlsUrlIsValid && uploadConfigured ? 'Bấm Upload để bắt đầu' : 'Nhập URL và cấu hình storage'}</span>
-              <h3>{remoteHlsWorkflowFinished ? `${remoteHlsBatchProgress.uploaded}/${remoteHlsBatchProgress.total} HLS trên storage` : remoteHlsDownloadingAndUploading ? `${remoteHlsBatchProgress.uploaded} đã upload · ${remoteHlsBatchProgress.downloaded} đã tải` : isRemoteHlsDownloading ? 'Đang tải playlist và segment…' : remoteHlsWorkflowUploading ? baseNameOf(localHlsPath) : 'N URL HLS → Storage'}</h3>
-              <p>{remoteHlsMessage || (uploadConfigured ? destinationPreview : 'Cấu hình storage ở bảng bên trái trước khi dán URL.')}</p>
-            </div>
-
-            {remoteHlsBatchProgress.total > 0 && (
-              <div className="url-download-metrics">
-                <div><span>Đã xử lý</span><strong>{remoteHlsBatchProgress.processed} / {remoteHlsBatchProgress.total}</strong><small>link nguồn</small></div>
-                <div><span>Tải thành công</span><strong>{remoteHlsBatchProgress.downloaded}</strong><small>HLS vào local tạm</small></div>
-                <div><span>Đã upload</span><strong>{remoteHlsBatchProgress.uploaded}</strong><small>HLS trên storage</small></div>
-                <div><span>Lỗi</span><strong>{remoteHlsBatchErrorCount}</strong><small>nguồn + upload</small></div>
-                {isRemoteHlsDownloading && remoteHlsProgress && (
-                  <div><span>Link hiện tại</span><strong>{remoteHlsProgress.completedFiles} / {remoteHlsProgress.discoveredFiles}</strong><small>{formatBytes(remoteHlsProgress.bytes)} local</small></div>
-                )}
-              </div>
-            )}
-
-            {uploadProgress && (remoteHlsWorkflowBusy || remoteHlsWorkflowFinished) && (
-              <div className="upload-progress-card">
-                <div className="upload-progress-number">
-                  <strong>{Math.round(uploadProgress.percent)}%</strong>
-                  <span>{uploadProgress.files} / {uploadProgress.totalFiles || '—'} file</span>
-                </div>
-                <div className="upload-progress-track"><span style={{ width: `${uploadProgress.percent}%` }} /></div>
-                <div className="upload-progress-meta">
-                  <span>{formatBytes(uploadProgress.bytes)} / {uploadProgress.totalBytes ? formatBytes(uploadProgress.totalBytes) : 'đang tính'}</span>
-                  <span>{formatBytes(uploadProgress.speedBytesPerSecond)}/s</span>
-                  <span>ETA {formatDuration(uploadProgress.etaSeconds)}</span>
-                </div>
-              </div>
-            )}
-
-            {remoteHlsPublicResults.length > 0 && (
-              <div className="public-url-results">
-                <div className="public-url-results-heading">
-                  <span><Link2 size={12} /> URL HLS đã sẵn sàng</span>
-                  <strong>{remoteHlsPublicResults.length}/{remoteHlsBatchProgress.downloaded}</strong>
-                </div>
-                <div className="public-url-results-list">
-                  {remoteHlsPublicResults.map((item, index) => (
-                    <div className="public-url-result" key={item.id}>
-                      <div>
-                        <span><CheckCircle2 size={12} /> Link {index + 1} · {baseNameOf(item.sourcePath)}</span>
-                        <code title={item.publicUrl}>{item.publicUrl}</code>
-                      </div>
-                      <span className="public-url-actions">
-                        <button type="button" onClick={() => void copyPublicUrl(item.publicUrl)}>
-                          {copiedPublicUrl === item.publicUrl ? <Check size={13} /> : <Copy size={13} />}
-                          {copiedPublicUrl === item.publicUrl ? 'Đã sao chép' : 'Sao chép'}
-                        </button>
-                        <button type="button" onClick={() => void window.encoder.openExternal(item.publicUrl)}><ExternalLink size={13} /> Mở URL</button>
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="upload-route-card url-upload-route-card">
-              <div><span>Nguồn</span><strong>{remoteHlsUrl ? `${parsedRemoteHlsUrls.length} URL HLS · token đã ẩn` : remoteHlsBatchProgress.total > 0 ? `${remoteHlsBatchProgress.total} URL HLS · đã ẩn` : 'Chưa nhập URL'}</strong></div>
-              <i />
-              <div><span>Storage</span><strong title={destinationPreview}>{uploadConfigured ? destinationPreview : 'Chưa cấu hình'}</strong></div>
-            </div>
-          </div>
-
-          <div className={`log-panel ${showLogs ? 'expanded' : ''}`}>
-            <button className="log-toggle" type="button" onClick={() => setShowLogs((current) => !current)}>
-              <span><Terminal size={15} /> Nhật ký upload <em>{uploadLogs.length}</em></span>
-              <ChevronDown size={16} />
-            </button>
-            {showLogs && (
-              <div className="log-output" ref={logOutputRef}>
-                {uploadLogs.length === 0 ? <span className="log-empty">Chưa có dữ liệu log.</span> : uploadLogs.map((line, index) => <code key={`${index}-${line}`}>{line}</code>)}
-              </div>
-            )}
-          </div>
-        </aside>
-      </main>
-      ) : (
-      <main className="workspace cloud-storage-workspace">
-        <section className="config-panel cloud-storage-browser-panel">
-          <div className="section-heading hero-heading cloud-storage-hero">
-            <div>
-              <span className="eyebrow">RCLONE OBJECT MANAGER</span>
-              <h1>Quản lý Cloud Storage.</h1>
-              <p>Duyệt và CRUD file, thư mục trên Cloudflare R2, Amazon S3 hoặc S3 tương thích.</p>
-            </div>
-            <HardDrive className="upload-hero-icon" size={35} strokeWidth={1.35} />
-          </div>
-
-          <div className="config-scroll cloud-storage-scroll">
-            <section className="config-section cloud-storage-location-section">
-              <div className="cloud-storage-location-grid">
-                <label>
-                  <span>Remote rclone</span>
-                  <select
-                    value={selectedRemote}
-                    onChange={(event) => {
-                      setSelectedRemote(event.target.value);
-                      setCloudStorageLoadedRemote('');
-                      setCloudStorageEntries([]);
-                    }}
-                    disabled={cloudActionBusy || cloudStorageLoading}
-                  >
-                    {rcloneStatus.remotes.length === 0 && <option value="">Chưa có remote</option>}
-                    {rcloneStatus.remotes.map((remote) => <option key={remote.name} value={remote.name}>{remote.name} · {remote.type}</option>)}
-                  </select>
-                </label>
-                <label className="cloud-storage-path-field">
-                  <span>Bucket / đường dẫn hiện tại</span>
-                  <input
-                    value={cloudStoragePath}
-                    placeholder="daophim-files/media"
-                    onChange={(event) => setCloudStoragePath(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') void loadCloudStorage(cloudStoragePath);
-                    }}
-                    disabled={cloudActionBusy || cloudStorageLoading}
-                    spellCheck={false}
-                  />
-                </label>
-                <div className="cloud-storage-navigation-actions">
-                  <button type="button" title="Về gốc remote" onClick={() => void loadCloudStorage('')} disabled={!selectedRemote || cloudActionBusy || cloudStorageLoading}><Home size={14} /></button>
-                  <button type="button" title="Lên thư mục cha" onClick={() => void loadCloudStorage(parentCloudStoragePath(cloudStoragePath))} disabled={!cloudStoragePath || cloudActionBusy || cloudStorageLoading}><ArrowLeft size={14} /></button>
-                  <button type="button" onClick={() => void loadCloudStorage(cloudStoragePath)} disabled={!selectedRemote || cloudActionBusy || cloudStorageLoading}>
-                    {cloudStorageLoading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Tải
-                  </button>
-                </div>
-              </div>
-              <p className="cloud-storage-scope-note">
-                Token chỉ có quyền một bucket có thể không liệt kê được gốc remote; hãy nhập trực tiếp tên bucket vào ô đường dẫn.
-              </p>
-            </section>
-
-            <section className="config-section cloud-storage-create-section">
-              <div className="cloud-create-folder">
-                <label>
-                  <span>Tạo thư mục mới tại <code>{cloudStoragePath || `${selectedRemote || 'remote'}:`}</code></span>
-                  <input
-                    value={cloudNewFolderName}
-                    placeholder="Tên thư mục"
-                    onChange={(event) => setCloudNewFolderName(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') void createCloudFolder();
-                    }}
-                    disabled={!selectedRemote || cloudActionBusy}
-                  />
-                </label>
-                <button type="button" onClick={() => void createCloudFolder()} disabled={!selectedRemote || !cloudNewFolderName.trim() || cloudActionBusy}>
-                  <FolderPlus size={14} /> Tạo thư mục
-                </button>
-              </div>
-              <div className="cloud-upload-actions">
-                <button type="button" onClick={() => void uploadCloudFiles()} disabled={!selectedRemote || cloudActionBusy}>
-                  <Upload size={14} /> Upload file
-                </button>
-                <button type="button" onClick={() => void uploadCloudFolder()} disabled={!selectedRemote || cloudActionBusy}>
-                  <FolderOpen size={14} /> Upload thư mục
-                </button>
-                <label className="cloud-storage-search">
-                  <Search size={13} />
-                  <input value={cloudStorageSearch} onChange={(event) => setCloudStorageSearch(event.target.value)} placeholder="Lọc tên trong thư mục…" />
-                </label>
-              </div>
-              {cloudActionMessage && (
-                <div className={`cloud-action-feedback ${cloudActionStatus}`}>
-                  {cloudActionStatus === 'working' && <LoaderCircle className="spin" size={13} />}
-                  {cloudActionStatus === 'success' && <CheckCircle2 size={13} />}
-                  {cloudActionStatus === 'failed' && <AlertCircle size={13} />}
-                  <span>{cloudActionMessage}</span>
-                </div>
-              )}
-            </section>
-
-            <section className="config-section cloud-storage-list-section">
-              <div className="cloud-storage-list-heading">
-                <div>
-                  <span><HardDrive size={13} /> {selectedRemote ? `${selectedRemote}:${cloudStoragePath}` : 'Chưa chọn remote'}</span>
-                  <small>{cloudFolderCount} thư mục · {cloudFileCount} file · {formatBytes(cloudTotalBytes)}</small>
-                </div>
-                <span>{filteredCloudStorageEntries.length}/{cloudStorageEntries.length} mục</span>
-              </div>
-              <div className="cloud-storage-table" role="table" aria-label="Nội dung cloud storage">
-                <div className="cloud-storage-table-head" role="row">
-                  <span>Tên</span><span>Kích thước</span><span>Cập nhật</span>
-                </div>
-                {cloudStorageLoading ? (
-                  <div className="cloud-storage-empty"><LoaderCircle className="spin" size={22} /><strong>Đang đọc object bằng rclone…</strong></div>
-                ) : filteredCloudStorageEntries.length > 0 ? (
-                  filteredCloudStorageEntries.map((entry) => (
-                    <button
-                      className={`cloud-storage-row ${selectedCloudStoragePath === entry.path ? 'selected' : ''}`}
-                      type="button"
-                      role="row"
-                      key={entry.path}
-                      onClick={() => selectCloudStorageEntry(entry)}
-                      onDoubleClick={() => {
-                        if (entry.isDirectory) void loadCloudStorage(entry.path);
-                      }}
-                    >
-                      <span className="cloud-storage-name-cell" role="cell">
-                        <i>{entry.isDirectory ? <Folder size={15} /> : <FileIcon size={15} />}</i>
-                        <b title={entry.name}>{entry.name}</b>
-                        {entry.isDirectory && <small>Nhấp đúp để mở</small>}
-                      </span>
-                      <span role="cell">{entry.isDirectory ? '—' : formatBytes(entry.size)}</span>
-                      <span role="cell">{formatCloudDate(entry.modTime)}</span>
-                    </button>
-                  ))
-                ) : (
-                  <div className="cloud-storage-empty">
-                    <FolderOpen size={24} />
-                    <strong>{cloudStorageLoadedRemote ? 'Thư mục trống hoặc không có mục phù hợp.' : 'Nhập bucket / đường dẫn rồi bấm Tải.'}</strong>
-                    <span>Thư mục trên object storage là đường dẫn ảo; app dùng file .keep ẩn cho thư mục trống.</span>
-                  </div>
-                )}
-              </div>
-            </section>
-          </div>
-
-          <div className="action-bar cloud-storage-action-bar">
-            <div className="encode-summary">
-              <span><HardDrive size={14} /> {cloudActionBusy ? 'Đang thao tác cloud storage' : `${cloudStorageEntries.length} mục trong thư mục hiện tại`}</span>
-              <small>{selectedCloudStorageEntry ? `Đã chọn ${selectedCloudStorageEntry.path}` : 'Chọn một mục để đổi tên, sao chép, di chuyển, tải xuống hoặc xóa'}</small>
-            </div>
-            <button className="start-button" type="button" onClick={() => void loadCloudStorage(cloudStoragePath)} disabled={!selectedRemote || cloudActionBusy || cloudStorageLoading}>
-              <RefreshCw size={15} /> Làm mới
-            </button>
-          </div>
-        </section>
-
-        <aside className="status-panel cloud-storage-inspector-panel">
-          <div className="status-heading">
-            <div>
-              <span className="eyebrow">OBJECT INSPECTOR</span>
-              <h2>Chi tiết & thao tác</h2>
-            </div>
-            <span className={`status-chip ${cloudActionBusy ? 'encoding' : cloudActionStatus === 'failed' ? 'failed' : selectedCloudStorageEntry ? 'completed' : 'idle'}`}>
-              <i /> {cloudActionBusy ? 'ĐANG XỬ LÝ' : selectedCloudStorageEntry ? 'ĐÃ CHỌN' : 'CHỜ CHỌN'}
-            </span>
-          </div>
-
-          <div className="status-content cloud-storage-inspector-content">
-            <label className="cloud-public-base-field">
-              <span>URL public / CDN của bucket</span>
-              <input
-                value={publicBaseUrl}
-                placeholder="https://cdn.daophim.space"
-                onChange={(event) => changePublicBaseUrl(event.target.value)}
-                disabled={!selectedRemote || cloudActionBusy}
-                spellCheck={false}
-              />
-              {publicBaseUrlError && <small>{publicBaseUrlError}</small>}
-            </label>
-
-            {selectedCloudStorageEntry ? (
-              <>
-                <div className="cloud-selected-card">
-                  <i>{selectedCloudStorageEntry.isDirectory ? <Folder size={25} /> : <FileIcon size={25} />}</i>
-                  <div>
-                    <span>{selectedCloudStorageEntry.isDirectory ? 'THƯ MỤC' : 'FILE / OBJECT'}</span>
-                    <h3 title={selectedCloudStorageEntry.name}>{selectedCloudStorageEntry.name}</h3>
-                    <code title={selectedCloudStorageEntry.path}>{selectedCloudStorageEntry.path}</code>
-                  </div>
-                </div>
-                <div className="cloud-selected-meta">
-                  <div><span>Kích thước</span><strong>{selectedCloudStorageEntry.isDirectory ? '—' : formatBytes(selectedCloudStorageEntry.size)}</strong></div>
-                  <div><span>Cập nhật</span><strong>{formatCloudDate(selectedCloudStorageEntry.modTime)}</strong></div>
-                  <div><span>MIME</span><strong>{selectedCloudStorageEntry.mimeType || (selectedCloudStorageEntry.isDirectory ? 'directory' : '—')}</strong></div>
-                </div>
-
-                <div className="cloud-primary-actions">
-                  {selectedCloudStorageEntry.isDirectory && (
-                    <button type="button" onClick={() => void loadCloudStorage(selectedCloudStorageEntry.path)} disabled={cloudActionBusy}><FolderOpen size={13} /> Mở thư mục</button>
-                  )}
-                  <button type="button" onClick={() => void downloadSelectedCloudEntry()} disabled={cloudActionBusy}><Download size={13} /> Tải xuống</button>
-                </div>
-
-                <div className="cloud-operation-block">
-                  <label><span>Đổi tên trong thư mục hiện tại</span><input value={cloudRenameName} onChange={(event) => setCloudRenameName(event.target.value)} disabled={cloudActionBusy} /></label>
-                  <button type="button" onClick={() => void renameSelectedCloudEntry()} disabled={!cloudRenameName.trim() || cloudRenameName === selectedCloudStorageEntry.name || cloudActionBusy}><Pencil size={12} /> Đổi tên</button>
-                </div>
-                <div className="cloud-operation-block">
-                  <label><span>Sao chép tới đường dẫn đầy đủ</span><input value={cloudCopyDestination} onChange={(event) => setCloudCopyDestination(event.target.value)} disabled={cloudActionBusy} spellCheck={false} /></label>
-                  <button type="button" onClick={() => void copySelectedCloudEntry()} disabled={!cloudCopyDestination.trim() || cloudCopyDestination === selectedCloudStorageEntry.path || cloudActionBusy}><Copy size={12} /> Sao chép</button>
-                </div>
-                <div className="cloud-operation-block">
-                  <label><span>Di chuyển tới đường dẫn đầy đủ</span><input value={cloudMoveDestination} onChange={(event) => setCloudMoveDestination(event.target.value)} disabled={cloudActionBusy} spellCheck={false} /></label>
-                  <button type="button" onClick={() => void moveSelectedCloudEntry()} disabled={!cloudMoveDestination.trim() || cloudMoveDestination === selectedCloudStorageEntry.path || cloudActionBusy}><ArrowLeft size={12} /> Di chuyển</button>
-                </div>
-
-                {(selectedCloudStoragePublicUrl || selectedCloudStorageHlsUrl) && (
-                  <div className="cloud-public-links">
-                    {selectedCloudStoragePublicUrl && (
-                      <div><span>URL public</span><code title={selectedCloudStoragePublicUrl}>{selectedCloudStoragePublicUrl}</code><button type="button" aria-label="Copy URL public" title="Copy URL public" onClick={() => void copyPublicUrl(selectedCloudStoragePublicUrl)}>{copiedPublicUrl === selectedCloudStoragePublicUrl ? <Check size={12} /> : <Copy size={12} />}</button></div>
-                    )}
-                    {selectedCloudStorageHlsUrl && (
-                      <div><span>HLS master</span><code title={selectedCloudStorageHlsUrl}>{selectedCloudStorageHlsUrl}</code><button type="button" aria-label="Copy URL HLS master" title="Copy URL HLS master" onClick={() => void copyPublicUrl(selectedCloudStorageHlsUrl)}>{copiedPublicUrl === selectedCloudStorageHlsUrl ? <Check size={12} /> : <Copy size={12} />}</button></div>
-                    )}
-                  </div>
-                )}
-
-                <div className="cloud-danger-zone">
-                  <div><strong>Xóa khỏi cloud storage</strong><span>{selectedCloudStorageEntry.isDirectory ? 'Xóa toàn bộ thư mục và mọi object bên trong.' : 'Xóa vĩnh viễn object đã chọn.'}</span></div>
-                  <button className={cloudDeleteArmedPath === selectedCloudStorageEntry.path ? 'armed' : ''} type="button" onClick={() => void deleteSelectedCloudEntry()} disabled={cloudActionBusy}>
-                    <Trash2 size={13} /> {cloudDeleteArmedPath === selectedCloudStorageEntry.path ? 'Xác nhận xóa' : 'Xóa'}
-                  </button>
-                </div>
-              </>
-            ) : (
-              <div className="cloud-inspector-empty">
-                <div><HardDrive size={31} /></div>
-                <h3>Chọn một file hoặc thư mục</h3>
-                <p>Thông tin object, URL public và toàn bộ thao tác CRUD sẽ xuất hiện tại đây.</p>
-                <ul>
-                  <li><FolderPlus size={12} /> Tạo thư mục ảo trên R2/S3</li>
-                  <li><Upload size={12} /> Upload file hoặc nguyên thư mục</li>
-                  <li><Pencil size={12} /> Đổi tên, sao chép và di chuyển</li>
-                  <li><Download size={12} /> Tải file/thư mục về máy</li>
-                  <li><Trash2 size={12} /> Xóa với xác nhận hai bước</li>
-                </ul>
-              </div>
-            )}
-          </div>
-        </aside>
-      </main>
-      )}
+      ) : null}
 
       {activeTab === 'encode' && isDragging && (
         <div className="drop-overlay">

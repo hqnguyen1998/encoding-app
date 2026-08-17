@@ -26,18 +26,11 @@ export async function getRclonePath(): Promise<string | null> {
   const name = binaryName();
   const candidates: string[] = [];
 
-  if (process.env.RCLONE_PATH) candidates.push(process.env.RCLONE_PATH);
   if (folder) {
     if (typeof process.resourcesPath === 'string') {
       candidates.push(path.join(process.resourcesPath, 'bin', name));
     }
     candidates.push(path.resolve(__dirname, '../../../vendor/rclone', folder, name));
-  }
-
-  const pathEntries = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
-  candidates.push(...pathEntries.map((entry) => path.join(entry, name)));
-  if (process.platform === 'darwin') {
-    candidates.push('/opt/homebrew/bin/rclone', '/usr/local/bin/rclone', '/usr/bin/rclone');
   }
 
   for (const candidate of [...new Set(candidates)]) {

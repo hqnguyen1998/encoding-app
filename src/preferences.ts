@@ -4,7 +4,6 @@ import type {
   AdvancedEncodeSettings,
   LogoOverlaySettings,
   PresetId,
-  RcloneProvider,
   RcloneUploadPerformanceId,
   SpeedId,
   VideoEncoderId,
@@ -19,7 +18,7 @@ export interface StorageLike {
 
 export interface AppPreferences {
   version: 1;
-  activeTab: 'encode' | 'upload' | 'url-upload' | 'storage';
+  activeTab: 'encode' | 'onzload';
   encode: {
     outputDirectory: string;
     presetId: PresetId;
@@ -31,18 +30,7 @@ export interface AppPreferences {
     logoOverlay: LogoOverlaySettings;
   };
   upload: {
-    selectedRemote: string;
-    remoteDestinationPath: string;
-    uploadAfterEncode: boolean;
     performanceId: RcloneUploadPerformanceId;
-    cloudStoragePath: string;
-  };
-  remoteDraft: {
-    provider: RcloneProvider;
-    name: string;
-    accessKeyId: string;
-    endpoint: string;
-    region: string;
   };
 }
 
@@ -60,18 +48,7 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
     logoOverlay: normalizeLogoOverlaySettings(undefined),
   },
   upload: {
-    selectedRemote: '',
-    remoteDestinationPath: '',
-    uploadAfterEncode: false,
     performanceId: 'fast',
-    cloudStoragePath: '',
-  },
-  remoteDraft: {
-    provider: 'Cloudflare',
-    name: '',
-    accessKeyId: '',
-    endpoint: '',
-    region: 'auto',
   },
 };
 
@@ -93,14 +70,13 @@ function parsePreferences(value: unknown): AppPreferences {
   const root = record(value);
   const encode = record(root.encode);
   const upload = record(root.upload);
-  const remoteDraft = record(root.remoteDraft);
   const segmentDuration = typeof encode.segmentDuration === 'number' && Number.isFinite(encode.segmentDuration)
     ? Math.min(10, Math.max(2, Math.round(encode.segmentDuration)))
     : DEFAULT_APP_PREFERENCES.encode.segmentDuration;
 
   return {
     version: 1,
-    activeTab: oneOf(root.activeTab, ['encode', 'upload', 'url-upload', 'storage'], DEFAULT_APP_PREFERENCES.activeTab),
+    activeTab: oneOf(root.activeTab === 'upload' ? 'onzload' : root.activeTab, ['encode', 'onzload'], DEFAULT_APP_PREFERENCES.activeTab),
     encode: {
       outputDirectory: stringValue(encode.outputDirectory, '', 2_000),
       presetId: oneOf(
@@ -120,18 +96,11 @@ function parsePreferences(value: unknown): AppPreferences {
       logoOverlay: normalizeLogoOverlaySettings(record(encode.logoOverlay)),
     },
     upload: {
-      selectedRemote: stringValue(upload.selectedRemote, '', 64),
-      remoteDestinationPath: stringValue(upload.remoteDestinationPath, '', 1_000),
-      uploadAfterEncode: upload.uploadAfterEncode === true,
-      performanceId: oneOf(upload.performanceId, ['stable', 'fast', 'maximum'], DEFAULT_APP_PREFERENCES.upload.performanceId),
-      cloudStoragePath: stringValue(upload.cloudStoragePath, '', 2_000),
-    },
-    remoteDraft: {
-      provider: oneOf(remoteDraft.provider, ['Cloudflare', 'AWS', 'Other'], DEFAULT_APP_PREFERENCES.remoteDraft.provider),
-      name: stringValue(remoteDraft.name, '', 64),
-      accessKeyId: stringValue(remoteDraft.accessKeyId, '', 512),
-      endpoint: stringValue(remoteDraft.endpoint, '', 2_000),
-      region: stringValue(remoteDraft.region, DEFAULT_APP_PREFERENCES.remoteDraft.region, 128),
+      performanceId: oneOf(
+        upload.performanceId,
+        ['stable', 'fast', 'maximum'],
+        DEFAULT_APP_PREFERENCES.upload.performanceId,
+      ),
     },
   };
 }

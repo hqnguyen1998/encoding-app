@@ -9,7 +9,6 @@ import type {
   RcloneUploadProgress,
 } from '../../shared/types';
 import { resolveRcloneUploadPerformance } from '../../shared/upload-performance';
-import { parseRcloneStatsLine } from '../rclone/upload';
 import { onzloadApiRequest, readOnzloadSession } from './auth';
 
 type EmitEvent = (event: OnzloadUploadEvent) => void;
@@ -42,6 +41,44 @@ interface CompletedUpload {
 
 const ALLOWED_HLS_EXTENSIONS = new Set(['.m3u8', '.ts', '.m4s', '.mp4']);
 const REMOTE_NAME = 'onzloadtmp';
+
+interface RcloneStats {
+  bytes?: unknown;
+  totalBytes?: unknown;
+  speed?: unknown;
+  eta?: unknown;
+  transfers?: unknown;
+  totalTransfers?: unknown;
+}
+
+function finiteNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+export function parseRcloneStatsLine(line: string): RcloneUploadProgress | null {
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (!payload.stats || typeof payload.stats !== 'object') return null;
+  const stats = payload.stats as RcloneStats;
+  const bytes = finiteNumber(stats.bytes);
+  const totalBytes = finiteNumber(stats.totalBytes);
+  const files = finiteNumber(stats.transfers);
+  const totalFiles = finiteNumber(stats.totalTransfers);
+  const ratio = totalBytes > 0 ? bytes / totalBytes : totalFiles > 0 ? files / totalFiles : 0;
+  return {
+    percent: Math.min(99.5, Math.max(0, ratio * 100)),
+    bytes,
+    totalBytes,
+    speedBytesPerSecond: finiteNumber(stats.speed),
+    etaSeconds: typeof stats.eta === 'number' && Number.isFinite(stats.eta) ? stats.eta : null,
+    files,
+    totalFiles,
+  };
+}
 
 function parseLogMessage(line: string): string | null {
   try {
@@ -115,10 +152,13 @@ export function buildOnzloadRcloneArgs(
   ];
 }
 
-function rcloneEnvironment(prepared: PreparedUpload) {
+export function buildOnzloadRcloneEnvironment(prepared: PreparedUpload) {
   if (!prepared.endpoint || !prepared.credentials) throw new Error('OnzLoad không trả về credential upload.');
   return {
     ...process.env,
+    // Ignore every local config file. This remote exists only in memory and is
+    // built from the short-lived, prefix-scoped credentials issued by OnzLoad.
+    RCLONE_CONFIG: process.platform === 'win32' ? 'NUL' : '/dev/null',
     RCLONE_CONFIG_ONZLOADTMP_TYPE: 's3',
     RCLONE_CONFIG_ONZLOADTMP_PROVIDER: 'Cloudflare',
     RCLONE_CONFIG_ONZLOADTMP_ENV_AUTH: 'false',
@@ -185,7 +225,7 @@ export class OnzloadUploadJob {
     const child = spawn(this.rclonePath, buildOnzloadRcloneArgs(this.config, destination), {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: rcloneEnvironment(prepared),
+      env: buildOnzloadRcloneEnvironment(prepared),
     });
     this.process = child;
     this.emit({ type: 'started', jobId: this.id, uploadId: prepared.uploadId, destination });

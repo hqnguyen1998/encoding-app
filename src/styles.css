@@ -1517,6 +1517,111 @@ button:focus-visible {
 .onzload-options-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--line); }
 .onzload-last-log { display: block; overflow: hidden; padding: 8px 11px; border-top: 1px solid var(--line); color: #748079; font-size: 6.5px; text-overflow: ellipsis; white-space: nowrap; }
 
+.onzload-only-workspace .upload-config-scroll {
+  background: linear-gradient(150deg, rgba(101, 214, 157, 0.018), transparent 55%);
+}
+
+.onzload-server-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 11px;
+  padding-top: 11px;
+  border-top: 1px solid var(--line);
+}
+
+.onzload-server-row > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.onzload-server-row span,
+.onzload-server-row small {
+  color: var(--muted-2);
+  font-size: 6.5px;
+}
+
+.onzload-server-row strong {
+  overflow: hidden;
+  color: #a7c8b6;
+  font-family: var(--mono);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.onzload-server-row > button,
+.onzload-upload-buttons button {
+  min-height: 33px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 11px;
+  border: 1px solid rgba(101, 214, 157, 0.22);
+  border-radius: 6px;
+  color: var(--green);
+  background: rgba(101, 214, 157, 0.045);
+  font-size: 7.5px;
+  font-weight: 680;
+  cursor: pointer;
+}
+
+.onzload-upload-section {
+  border-bottom: 0;
+}
+
+.onzload-simple-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.onzload-simple-actions .auto-upload-toggle {
+  padding: 12px;
+  border: 1px solid rgba(101, 214, 157, 0.16);
+  border-radius: 8px;
+  background: rgba(101, 214, 157, 0.025);
+}
+
+.onzload-upload-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.onzload-upload-buttons .onzload-upload-now {
+  border-color: rgba(255, 184, 77, 0.24);
+  color: var(--accent);
+  background: rgba(255, 184, 77, 0.045);
+}
+
+.onzload-security-note {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 12px;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--green);
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.onzload-security-note > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.onzload-security-note strong { color: #a7c8b6; font-size: 7.5px; }
+.onzload-security-note span { color: var(--muted-2); font-size: 6.5px; }
+.onzload-route-card > div:last-child strong { color: var(--green); }
+
 .cloud-heading {
   display: flex;
   align-items: flex-start;

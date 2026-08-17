@@ -4,9 +4,7 @@ import { encodeStartBlocker, uploadStartBlocker, type PipelineActivity } from '.
 const idle: PipelineActivity = {
   encodeActive: false,
   uploadActive: false,
-  remoteHlsDownloadActive: false,
   subtitleExportActive: false,
-  cloudStorageMutationActive: false,
 };
 
 describe('encode/upload pipeline concurrency', () => {
@@ -18,13 +16,8 @@ describe('encode/upload pipeline concurrency', () => {
     expect(uploadStartBlocker({ ...idle, encodeActive: true })).toBeNull();
   });
 
-  it('allows a downloaded HLS item to upload while the next URL is downloading', () => {
-    expect(uploadStartBlocker({ ...idle, remoteHlsDownloadActive: true })).toBeNull();
-  });
-
-  it('still blocks two jobs of the same kind and shared storage operations', () => {
+  it('still blocks two jobs of the same kind', () => {
     expect(encodeStartBlocker({ ...idle, encodeActive: true })).toContain('encode khác');
     expect(uploadStartBlocker({ ...idle, uploadActive: true })).toContain('upload khác');
-    expect(uploadStartBlocker({ ...idle, cloudStorageMutationActive: true })).toContain('cloud storage');
   });
 });

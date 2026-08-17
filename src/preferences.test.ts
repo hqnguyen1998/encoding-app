@@ -3,7 +3,6 @@ import {
   APP_PREFERENCES_KEY,
   DEFAULT_APP_PREFERENCES,
   loadAppPreferences,
-  saveAppPreferences,
   type StorageLike,
 } from './preferences';
 
@@ -19,8 +18,7 @@ function memoryStorage(initialValue: string | null = null): StorageLike {
 }
 
 describe('app preferences', () => {
-  it('restores encode, upload and non-secret remote fields', () => {
-    const storage = memoryStorage();
+  it('restores encode settings but discards obsolete local storage configuration', () => {
     const preferences = {
       ...DEFAULT_APP_PREFERENCES,
       activeTab: 'upload' as const,
@@ -59,9 +57,12 @@ describe('app preferences', () => {
       },
     };
 
-    expect(saveAppPreferences(storage, preferences)).toBe(true);
-    expect(loadAppPreferences(storage)).toMatchObject(preferences);
-    expect(JSON.stringify(loadAppPreferences(storage))).not.toContain('secret');
+    const legacyStorage = memoryStorage(JSON.stringify(preferences));
+    const restored = loadAppPreferences(legacyStorage);
+    expect(restored.activeTab).toBe('onzload');
+    expect(restored.encode).toEqual(preferences.encode);
+    expect(restored.upload.performanceId).toBe('maximum');
+    expect(JSON.stringify(restored)).not.toContain('access-id');
   });
 
   it('uses safe defaults for malformed or unsupported saved values', () => {
@@ -76,7 +77,6 @@ describe('app preferences', () => {
     expect(preferences.encode.presetId).toBe('copy-source');
     expect(preferences.encode.segmentDuration).toBe(10);
     expect(preferences.encode.advancedSettings.hlsSegmentType).toBe('mpegts');
-    expect(preferences.upload.uploadAfterEncode).toBe(false);
     expect(preferences.upload.performanceId).toBe('fast');
   });
 
@@ -84,22 +84,20 @@ describe('app preferences', () => {
     expect(loadAppPreferences(memoryStorage('{not-json'))).toEqual(DEFAULT_APP_PREFERENCES);
   });
 
-  it('restores the dedicated URL upload tab without persisting a source URL', () => {
-    const storage = memoryStorage();
-    expect(saveAppPreferences(storage, { ...DEFAULT_APP_PREFERENCES, activeTab: 'url-upload' })).toBe(true);
+  it('does not restore the obsolete URL upload tab', () => {
+    const storage = memoryStorage(JSON.stringify({ activeTab: 'url-upload' }));
     const restored = loadAppPreferences(storage);
-    expect(restored.activeTab).toBe('url-upload');
+    expect(restored.activeTab).toBe('encode');
     expect(JSON.stringify(restored)).not.toContain('m3u8');
   });
 
-  it('restores the cloud storage manager tab and last safe browsing path', () => {
-    const storage = memoryStorage();
-    const preferences = {
-      ...DEFAULT_APP_PREFERENCES,
-      activeTab: 'storage' as const,
-      upload: { ...DEFAULT_APP_PREFERENCES.upload, cloudStoragePath: 'daophim-files/media/HLS' },
-    };
-    expect(saveAppPreferences(storage, preferences)).toBe(true);
-    expect(loadAppPreferences(storage)).toMatchObject(preferences);
+  it('does not restore the obsolete cloud storage manager or browsing path', () => {
+    const storage = memoryStorage(JSON.stringify({
+      activeTab: 'storage',
+      upload: { cloudStoragePath: 'daophim-files/media/HLS' },
+    }));
+    const restored = loadAppPreferences(storage);
+    expect(restored.activeTab).toBe('encode');
+    expect(restored.upload).toEqual(DEFAULT_APP_PREFERENCES.upload);
   });
 });

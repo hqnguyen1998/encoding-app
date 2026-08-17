@@ -119,56 +119,7 @@ export interface EncodeProgress {
   statusText: string;
 }
 
-export interface RcloneRemote {
-  name: string;
-  type: string;
-  description: string;
-}
-
-export interface RcloneStatus {
-  available: boolean;
-  version: string | null;
-  remotes: RcloneRemote[];
-  message: string;
-}
-
-export interface RcloneTargetConfig {
-  remoteName: string;
-  destinationPath: string;
-  publicBaseUrl?: string;
-}
-
-export interface RcloneTargetResult {
-  destination: string;
-  message: string;
-}
-
-export type RcloneProvider = 'Cloudflare' | 'AWS' | 'Other';
 export type RcloneUploadPerformanceId = 'stable' | 'fast' | 'maximum';
-
-export interface RcloneRemoteConfig {
-  name: string;
-  provider: RcloneProvider;
-  accessKeyId: string;
-  secretAccessKey: string;
-  endpoint: string;
-  region: string;
-}
-
-export interface RcloneRemoteConfigResult {
-  remote: RcloneRemote;
-  message: string;
-}
-
-export interface RcloneUploadConfig extends RcloneTargetConfig {
-  sourcePath: string;
-  performanceId?: RcloneUploadPerformanceId;
-}
-
-export interface RcloneUploadStartResult {
-  jobId: string;
-  destination: string;
-}
 
 export interface RcloneUploadProgress {
   percent: number;
@@ -249,106 +200,6 @@ export type OnzloadUploadEvent =
   | { type: 'cancelled'; jobId: string }
   | { type: 'failed'; jobId: string; message: string };
 
-export interface RemoteHlsDownloadConfig {
-  url: string;
-  folderName?: string;
-}
-
-export interface RemoteHlsDownloadStartResult {
-  jobId: string;
-}
-
-export interface RemoteHlsDownloadResult {
-  outputPath: string;
-  rootPlaylistPath: string;
-  fileCount: number;
-  totalBytes: number;
-}
-
-export interface RemoteHlsDownloadProgress {
-  completedFiles: number;
-  discoveredFiles: number;
-  bytes: number;
-  statusText: string;
-}
-
-export interface CloudStorageEntry {
-  name: string;
-  path: string;
-  isDirectory: boolean;
-  size: number;
-  modTime: string;
-  mimeType: string;
-}
-
-export interface CloudStorageTargetConfig {
-  remoteName: string;
-  path: string;
-}
-
-export interface CloudStorageListResult {
-  remoteName: string;
-  path: string;
-  entries: CloudStorageEntry[];
-}
-
-export interface CloudStorageCreateFolderConfig extends CloudStorageTargetConfig {
-  name: string;
-}
-
-export interface CloudStorageUploadFilesConfig extends CloudStorageTargetConfig {
-  sourcePaths: string[];
-}
-
-export interface CloudStorageUploadFolderConfig extends CloudStorageTargetConfig {
-  sourcePath: string;
-}
-
-export interface CloudStorageRenameConfig extends CloudStorageTargetConfig {
-  isDirectory: boolean;
-  newName: string;
-}
-
-export interface CloudStorageCopyConfig extends CloudStorageTargetConfig {
-  destinationPath: string;
-  isDirectory: boolean;
-}
-
-export interface CloudStorageMoveConfig extends CloudStorageTargetConfig {
-  destinationPath: string;
-  isDirectory: boolean;
-}
-
-export interface CloudStorageDeleteConfig extends CloudStorageTargetConfig {
-  isDirectory: boolean;
-}
-
-export interface CloudStorageDownloadConfig extends CloudStorageTargetConfig {
-  isDirectory: boolean;
-  name: string;
-}
-
-export interface CloudStorageOperationResult {
-  message: string;
-  path: string;
-  localPath?: string;
-}
-
-export type RemoteHlsDownloadEvent =
-  | { type: 'started'; jobId: string }
-  | { type: 'progress'; jobId: string; progress: RemoteHlsDownloadProgress }
-  | { type: 'completed'; jobId: string; result: RemoteHlsDownloadResult }
-  | { type: 'cancelled'; jobId: string }
-  | { type: 'failed'; jobId: string; message: string };
-
-export type RcloneUploadEvent =
-  | { type: 'started'; jobId: string; destination: string }
-  | { type: 'progress'; jobId: string; progress: RcloneUploadProgress }
-  | { type: 'log'; jobId: string; line: string }
-  | { type: 'completed'; jobId: string; destination: string }
-  | { type: 'cancelled'; jobId: string }
-  | { type: 'failed'; jobId: string; message: string };
-
 export type EncodeEvent =
   | { type: 'started'; jobId: string; outputPath: string; videoEncoderId: Exclude<VideoEncoderId, 'auto'>; videoEncoderLabel: string }
   | { type: 'progress'; jobId: string; progress: EncodeProgress }
@@ -371,35 +222,14 @@ export interface EncoderApi {
   exportSubtitles: (config: SubtitleExportConfig) => Promise<SubtitleExportResult>;
   startEncode: (config: EncodeConfig) => Promise<EncodeStartResult>;
   cancelEncode: (jobId: string) => Promise<boolean>;
-  getRcloneStatus: () => Promise<RcloneStatus>;
-  saveRcloneRemote: (config: RcloneRemoteConfig) => Promise<RcloneRemoteConfigResult>;
-  testRcloneTarget: (config: RcloneTargetConfig) => Promise<RcloneTargetResult>;
-  startRcloneUpload: (config: RcloneUploadConfig) => Promise<RcloneUploadStartResult>;
-  cancelRcloneUpload: (jobId: string) => Promise<boolean>;
   getOnzloadSession: () => Promise<OnzloadSessionState>;
   loginOnzload: (config: OnzloadLoginConfig) => Promise<OnzloadSessionState>;
   logoutOnzload: () => Promise<OnzloadSessionState>;
   startOnzloadUpload: (config: OnzloadUploadConfig) => Promise<OnzloadUploadStartResult>;
   cancelOnzloadUpload: (jobId: string) => Promise<boolean>;
-  startRemoteHlsDownload: (config: RemoteHlsDownloadConfig) => Promise<RemoteHlsDownloadStartResult>;
-  cancelRemoteHlsDownload: (jobId: string) => Promise<boolean>;
-  cleanupRemoteHlsDownload: (outputPath: string) => Promise<boolean>;
-  selectCloudStorageFiles: () => Promise<string[]>;
-  selectCloudStorageFolder: () => Promise<string | null>;
-  listCloudStorage: (config: CloudStorageTargetConfig) => Promise<CloudStorageListResult>;
-  createCloudStorageFolder: (config: CloudStorageCreateFolderConfig) => Promise<CloudStorageOperationResult>;
-  uploadCloudStorageFiles: (config: CloudStorageUploadFilesConfig) => Promise<CloudStorageOperationResult>;
-  uploadCloudStorageFolder: (config: CloudStorageUploadFolderConfig) => Promise<CloudStorageOperationResult>;
-  renameCloudStorageEntry: (config: CloudStorageRenameConfig) => Promise<CloudStorageOperationResult>;
-  copyCloudStorageEntry: (config: CloudStorageCopyConfig) => Promise<CloudStorageOperationResult>;
-  moveCloudStorageEntry: (config: CloudStorageMoveConfig) => Promise<CloudStorageOperationResult>;
-  deleteCloudStorageEntry: (config: CloudStorageDeleteConfig) => Promise<CloudStorageOperationResult>;
-  downloadCloudStorageEntry: (config: CloudStorageDownloadConfig) => Promise<CloudStorageOperationResult | null>;
   revealInFolder: (targetPath: string) => Promise<void>;
   copyText: (text: string) => Promise<void>;
   openExternal: (url: string) => Promise<void>;
   onEncodeEvent: (listener: (event: EncodeEvent) => void) => () => void;
-  onRcloneUploadEvent: (listener: (event: RcloneUploadEvent) => void) => () => void;
   onOnzloadUploadEvent: (listener: (event: OnzloadUploadEvent) => void) => () => void;
-  onRemoteHlsDownloadEvent: (listener: (event: RemoteHlsDownloadEvent) => void) => () => void;
 }
