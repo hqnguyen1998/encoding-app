@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { access, opendir, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
+import { Transform } from 'node:stream';
 import type {
   OnzloadUploadConfig,
   OnzloadUploadEvent,
@@ -121,22 +122,42 @@ export async function uploadSignedFile(
     throw new Error(`OnzLoad trả về URL không khớp file ${file.relativePath}.`);
   }
   let sentBytes = 0;
-  const stream = createReadStream(file.absolutePath);
-  stream.on('data', (chunk: Buffer) => {
-    sentBytes += chunk.length;
-    onBytes(Math.min(file.size, sentBytes));
-  });
-  const timeoutSignal = AbortSignal.timeout(5 * 60 * 1000);
-  const response = await fetchImpl(signed.uploadUrl, {
-    method: 'PUT',
-    headers: {
-      ...signed.headers,
-      'Content-Length': String(file.size),
+  const source = createReadStream(file.absolutePath);
+  const progressStream = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      sentBytes += chunk.length;
+      onBytes(Math.min(file.size, sentBytes));
+      callback(null, chunk);
     },
-    body: stream as unknown as BodyInit,
-    duplex: 'half',
-    signal: AbortSignal.any([signal, timeoutSignal]),
-  } as RequestInit & { duplex: 'half' });
+  });
+  const body = source.pipe(progressStream);
+  const timeoutSignal = AbortSignal.timeout(5 * 60 * 1000);
+  let response: Response;
+  try {
+    response = await fetchImpl(signed.uploadUrl, {
+      method: 'PUT',
+      headers: {
+        ...signed.headers,
+        'Content-Length': String(file.size),
+      },
+      body: body as unknown as BodyInit,
+      duplex: 'half',
+      signal: AbortSignal.any([signal, timeoutSignal]),
+    } as RequestInit & { duplex: 'half' });
+  } catch (error) {
+    const cause = error && typeof error === 'object' && 'cause' in error
+      ? (error as { cause?: unknown }).cause
+      : null;
+    const detail = cause instanceof Error
+      ? cause.message
+      : error instanceof Error
+        ? error.message
+        : String(error);
+    throw new DirectUploadError(`Không thể upload ${file.relativePath}: ${detail}`);
+  } finally {
+    source.destroy();
+    progressStream.destroy();
+  }
   if (!response.ok) {
     const detail = (await response.text().catch(() => '')).replace(/\s+/g, ' ').trim().slice(0, 240);
     throw new DirectUploadError(

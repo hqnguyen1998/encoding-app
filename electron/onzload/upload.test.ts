@@ -40,7 +40,10 @@ describe('OnzLoad direct upload', () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'onzload-put-test-'));
     temporaryDirectories.push(root);
     const absolutePath = path.join(root, 'master.m3u8');
-    const content = Buffer.from('#EXTM3U\n#EXT-X-ENDLIST\n');
+    const content = Buffer.concat([
+      Buffer.from('#EXTM3U\n#EXT-X-ENDLIST\n'),
+      Buffer.alloc(2 * 1024 * 1024, 7),
+    ]);
     await writeFile(absolutePath, content);
 
     let received = Buffer.alloc(0);
