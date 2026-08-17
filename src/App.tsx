@@ -58,8 +58,8 @@ import type {
   OnzloadSessionState,
   OnzloadUploadEvent,
   PresetId,
-  RcloneUploadPerformanceId,
-  RcloneUploadProgress,
+  UploadPerformanceId,
+  UploadProgress,
   SpeedId,
   VideoEncoderId,
 } from '../shared/types';
@@ -92,7 +92,7 @@ interface OnzloadQueueItem {
   uploadId: string;
   destination: string;
   embedUrl: string;
-  progress: RcloneUploadProgress | null;
+  progress: UploadProgress | null;
   error: string;
 }
 
@@ -121,7 +121,7 @@ function initialEncodeProgress(durationSeconds: number): EncodeProgress {
   };
 }
 
-function initialUploadProgress(): RcloneUploadProgress {
+function initialUploadProgress(): UploadProgress {
   return {
     percent: 0,
     bytes: 0,
@@ -285,7 +285,7 @@ export default function App() {
   const [subtitleExportStatus, setSubtitleExportStatus] = useState<SubtitleExportStatus>('idle');
   const [subtitleExportMessage, setSubtitleExportMessage] = useState('');
   const [subtitleOutputDirectory, setSubtitleOutputDirectory] = useState('');
-  const uploadPerformanceId: RcloneUploadPerformanceId = savedPreferences.upload.performanceId;
+  const uploadPerformanceId: UploadPerformanceId = savedPreferences.upload.performanceId;
   const [localHlsPath, setLocalHlsPath] = useState('');
   const [encodeQueue, setEncodeQueue] = useState<EncodeQueueItem[]>([]);
   const [onzloadQueue, setOnzloadQueue] = useState<OnzloadQueueItem[]>([]);
@@ -1979,7 +1979,7 @@ export default function App() {
                 <ShieldCheck size={16} />
                 <div>
                   <strong>Không có khóa hoặc cấu hình R2 trên máy người dùng</strong>
-                  <span>Mỗi video chỉ nhận quyền upload tạm thời cho đúng thư mục do OnzLoad cấp.</span>
+                  <span>Mỗi file chỉ nhận một URL upload ký tạm thời do OnzLoad cấp.</span>
                 </div>
               </div>
 

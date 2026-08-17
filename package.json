@@ -16,9 +16,8 @@
     "smoke:encode": "npm run build:electron && node scripts/smoke-encode.cjs",
     "typecheck": "tsc --noEmit && tsc -p electron/tsconfig.json --noEmit",
     "dist": "npm run build && electron-builder",
-    "prepare:vendor:mac": "node scripts/prepare-vendor.cjs mac-arm64",
     "prepare:vendor:win": "node scripts/prepare-vendor.cjs win-x64",
-    "dist:mac": "npm run prepare:vendor:mac && npm run build && electron-builder --mac dmg --publish never",
+    "dist:mac": "npm run build && electron-builder --mac dmg --publish never",
     "dist:win": "npm run prepare:vendor:win && npm run build && electron-builder --win nsis --x64 --publish never"
   },
   "dependencies": {
@@ -68,16 +67,6 @@
         "CFBundleDisplayName": "Đảo Phim Encoding",
         "CFBundleName": "Dao Phim Encoding"
       },
-      "extraResources": [
-        {
-          "from": "vendor/rclone/mac-arm64/rclone",
-          "to": "bin/rclone"
-        },
-        {
-          "from": "vendor/rclone/COPYING.txt",
-          "to": "licenses/rclone-COPYING.txt"
-        }
-      ],
       "target": [
         "dmg"
       ],
@@ -106,14 +95,6 @@
         {
           "from": "vendor/ffmpeg/win-x64/ffprobe.exe",
           "to": "bin/ffprobe.exe"
-        },
-        {
-          "from": "vendor/rclone/win-x64/rclone.exe",
-          "to": "bin/rclone.exe"
-        },
-        {
-          "from": "vendor/rclone/COPYING.txt",
-          "to": "licenses/rclone-COPYING.txt"
         }
       ]
     },

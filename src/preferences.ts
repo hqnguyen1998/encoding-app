@@ -4,7 +4,7 @@ import type {
   AdvancedEncodeSettings,
   LogoOverlaySettings,
   PresetId,
-  RcloneUploadPerformanceId,
+  UploadPerformanceId,
   SpeedId,
   VideoEncoderId,
 } from '../shared/types';
@@ -30,7 +30,7 @@ export interface AppPreferences {
     logoOverlay: LogoOverlaySettings;
   };
   upload: {
-    performanceId: RcloneUploadPerformanceId;
+    performanceId: UploadPerformanceId;
   };
 }
 

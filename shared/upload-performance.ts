@@ -1,44 +1,36 @@
-import type { RcloneUploadPerformanceId } from './types';
+import type { UploadPerformanceId } from './types';
 
-export interface RcloneUploadPerformanceProfile {
-  id: RcloneUploadPerformanceId;
+export interface UploadPerformanceProfile {
+  id: UploadPerformanceId;
   name: string;
   description: string;
   transfers: number;
-  checkers: number;
-  bufferSize: string;
 }
 
-export const RCLONE_UPLOAD_PERFORMANCE_PROFILES: RcloneUploadPerformanceProfile[] = [
+export const UPLOAD_PERFORMANCE_PROFILES: UploadPerformanceProfile[] = [
   {
     id: 'stable',
     name: 'Ổn định',
     description: 'Ít RAM · mạng yếu',
-    transfers: 8,
-    checkers: 16,
-    bufferSize: '16M',
+    transfers: 4,
   },
   {
     id: 'fast',
     name: 'Nhanh',
     description: 'Khuyên dùng cho HLS',
-    transfers: 24,
-    checkers: 32,
-    bufferSize: '8M',
+    transfers: 8,
   },
   {
     id: 'maximum',
     name: 'Tối đa',
     description: 'Mạng mạnh · nhiều RAM',
-    transfers: 32,
-    checkers: 64,
-    bufferSize: '8M',
+    transfers: 16,
   },
 ];
 
-export function resolveRcloneUploadPerformance(
-  id: RcloneUploadPerformanceId | undefined,
-): RcloneUploadPerformanceProfile {
-  return RCLONE_UPLOAD_PERFORMANCE_PROFILES.find((profile) => profile.id === id)
-    ?? RCLONE_UPLOAD_PERFORMANCE_PROFILES[1];
+export function resolveUploadPerformance(
+  id: UploadPerformanceId | undefined,
+): UploadPerformanceProfile {
+  return UPLOAD_PERFORMANCE_PROFILES.find((profile) => profile.id === id)
+    ?? UPLOAD_PERFORMANCE_PROFILES[1];
 }

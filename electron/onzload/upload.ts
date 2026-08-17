@@ -1,35 +1,43 @@
-import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { access, opendir, stat } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import type {
   OnzloadUploadConfig,
   OnzloadUploadEvent,
   OnzloadUploadResult,
-  RcloneUploadProgress,
+  UploadProgress,
 } from '../../shared/types';
-import { resolveRcloneUploadPerformance } from '../../shared/upload-performance';
+import { resolveUploadPerformance } from '../../shared/upload-performance';
 import { onzloadApiRequest, readOnzloadSession } from './auth';
 
 type EmitEvent = (event: OnzloadUploadEvent) => void;
+
+interface HlsUploadFile {
+  absolutePath: string;
+  relativePath: string;
+  size: number;
+}
 
 interface PreparedUpload {
   uploadId: string;
   assetId: string;
   jobId: string;
-  outputPrefix: string;
-  playlistKey: string;
   completed: boolean;
   embedPath: string;
-  endpoint?: string;
-  bucket?: string;
-  region?: string;
-  credentials?: {
-    accessKeyId: string;
-    secretAccessKey: string;
-    sessionToken: string;
-    expiresAt: string;
-  };
+}
+
+interface PresignedUploadFile {
+  relativePath: string;
+  size: number;
+  uploadUrl: string;
+  headers: Record<string, string>;
+}
+
+interface PresignedUploadBatch {
+  uploadId: string;
+  expiresIn: number;
+  files: PresignedUploadFile[];
 }
 
 interface CompletedUpload {
@@ -40,57 +48,30 @@ interface CompletedUpload {
 }
 
 const ALLOWED_HLS_EXTENSIONS = new Set(['.m3u8', '.ts', '.m4s', '.mp4']);
-const REMOTE_NAME = 'onzloadtmp';
+const PRESIGN_BATCH_SIZE = 100;
+const UPLOAD_ATTEMPTS = 3;
 
-interface RcloneStats {
-  bytes?: unknown;
-  totalBytes?: unknown;
-  speed?: unknown;
-  eta?: unknown;
-  transfers?: unknown;
-  totalTransfers?: unknown;
-}
-
-function finiteNumber(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
-}
-
-export function parseRcloneStatsLine(line: string): RcloneUploadProgress | null {
-  let payload: Record<string, unknown>;
-  try {
-    payload = JSON.parse(line) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-  if (!payload.stats || typeof payload.stats !== 'object') return null;
-  const stats = payload.stats as RcloneStats;
-  const bytes = finiteNumber(stats.bytes);
-  const totalBytes = finiteNumber(stats.totalBytes);
-  const files = finiteNumber(stats.transfers);
-  const totalFiles = finiteNumber(stats.totalTransfers);
-  const ratio = totalBytes > 0 ? bytes / totalBytes : totalFiles > 0 ? files / totalFiles : 0;
-  return {
-    percent: Math.min(99.5, Math.max(0, ratio * 100)),
-    bytes,
-    totalBytes,
-    speedBytesPerSecond: finiteNumber(stats.speed),
-    etaSeconds: typeof stats.eta === 'number' && Number.isFinite(stats.eta) ? stats.eta : null,
-    files,
-    totalFiles,
-  };
-}
-
-function parseLogMessage(line: string): string | null {
-  try {
-    const payload = JSON.parse(line) as Record<string, unknown>;
-    if (payload.stats) return null;
-    return typeof payload.msg === 'string' && payload.msg.trim() ? payload.msg.trim() : null;
-  } catch {
-    return line.trim() || null;
+class DirectUploadError extends Error {
+  constructor(message: string, readonly status: number | null = null) {
+    super(message);
+    this.name = 'DirectUploadError';
   }
 }
 
-async function scanHlsFolder(root: string) {
+function hlsRelativePath(root: string, absolutePath: string) {
+  const relativePath = path.relative(root, absolutePath).split(path.sep).join('/');
+  if (
+    !relativePath ||
+    relativePath.startsWith('/') ||
+    relativePath.includes('\\') ||
+    relativePath.split('/').some((part) => !part || part === '.' || part === '..')
+  ) {
+    throw new Error('Thư mục HLS chứa đường dẫn file không an toàn.');
+  }
+  return relativePath;
+}
+
+export async function scanHlsFolder(root: string) {
   const rootStat = await stat(root);
   if (!rootStat.isDirectory()) throw new Error('Nguồn upload phải là thư mục HLS đã encode.');
   try {
@@ -99,7 +80,7 @@ async function scanHlsFolder(root: string) {
     throw new Error('Thư mục HLS phải có master.m3u8 ở cấp gốc.');
   }
 
-  let fileCount = 0;
+  const files: HlsUploadFile[] = [];
   let totalBytes = 0;
   const walk = async (directory: string): Promise<void> => {
     const entries = await opendir(directory);
@@ -112,77 +93,106 @@ async function scanHlsFolder(root: string) {
       }
       if (!entry.isFile() || !ALLOWED_HLS_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
       const info = await stat(absolutePath);
-      fileCount += 1;
+      if (info.size <= 0) throw new Error(`File HLS rỗng: ${entry.name}`);
+      files.push({ absolutePath, relativePath: hlsRelativePath(root, absolutePath), size: info.size });
       totalBytes += info.size;
-      if (fileCount > 50_000) throw new Error('Thư mục HLS có quá nhiều file.');
+      if (files.length > 50_000) throw new Error('Thư mục HLS có quá nhiều file.');
       if (!Number.isSafeInteger(totalBytes)) throw new Error('Dung lượng HLS vượt giới hạn ứng dụng.');
     }
   };
   await walk(root);
-  if (!fileCount || totalBytes <= 0) throw new Error('Thư mục HLS không có dữ liệu để upload.');
-  return { fileCount, totalBytes };
+  if (!files.length || totalBytes <= 0) throw new Error('Thư mục HLS không có dữ liệu để upload.');
+  files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+  return { files, fileCount: files.length, totalBytes };
 }
 
-export function buildOnzloadRcloneArgs(
-  config: OnzloadUploadConfig,
-  destination: string,
+export function presignRequestFiles(files: HlsUploadFile[]) {
+  return files.map(({ relativePath, size }) => ({ relativePath, size }));
+}
+
+export async function uploadSignedFile(
+  file: HlsUploadFile,
+  signed: PresignedUploadFile,
+  signal: AbortSignal,
+  onBytes: (bytes: number) => void,
+  fetchImpl: typeof fetch = fetch,
 ) {
-  const performance = resolveRcloneUploadPerformance(config.performanceId);
-  return [
-    'copy',
-    config.sourcePath,
-    destination,
-    '--include', '*.m3u8',
-    '--include', '*.ts',
-    '--include', '*.m4s',
-    '--include', '*.mp4',
-    '--use-json-log',
-    '--stats', '500ms',
-    '--stats-one-line=false',
-    '--stats-log-level', 'NOTICE',
-    '--log-level', 'INFO',
-    '--transfers', String(performance.transfers),
-    '--checkers', String(performance.checkers),
-    '--buffer-size', performance.bufferSize,
-    '--fast-list',
-    '--s3-no-check-bucket',
-    '--contimeout', '30s',
-    '--timeout', '5m',
-    '--ask-password=false',
-  ];
+  if (signed.relativePath !== file.relativePath || signed.size !== file.size) {
+    throw new Error(`OnzLoad trả về URL không khớp file ${file.relativePath}.`);
+  }
+  let sentBytes = 0;
+  const stream = createReadStream(file.absolutePath);
+  stream.on('data', (chunk: Buffer) => {
+    sentBytes += chunk.length;
+    onBytes(Math.min(file.size, sentBytes));
+  });
+  const timeoutSignal = AbortSignal.timeout(5 * 60 * 1000);
+  const response = await fetchImpl(signed.uploadUrl, {
+    method: 'PUT',
+    headers: {
+      ...signed.headers,
+      'Content-Length': String(file.size),
+    },
+    body: stream as unknown as BodyInit,
+    duplex: 'half',
+    signal: AbortSignal.any([signal, timeoutSignal]),
+  } as RequestInit & { duplex: 'half' });
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => '')).replace(/\s+/g, ' ').trim().slice(0, 240);
+    throw new DirectUploadError(
+      `R2 từ chối ${file.relativePath} (HTTP ${response.status})${detail ? `: ${detail}` : '.'}`,
+      response.status,
+    );
+  }
+  await response.arrayBuffer();
+  onBytes(file.size);
 }
 
-export function buildOnzloadRcloneEnvironment(prepared: PreparedUpload) {
-  if (!prepared.endpoint || !prepared.credentials) throw new Error('OnzLoad không trả về credential upload.');
-  return {
-    ...process.env,
-    // Ignore every local config file. This remote exists only in memory and is
-    // built from the short-lived, prefix-scoped credentials issued by OnzLoad.
-    RCLONE_CONFIG: process.platform === 'win32' ? 'NUL' : '/dev/null',
-    RCLONE_CONFIG_ONZLOADTMP_TYPE: 's3',
-    RCLONE_CONFIG_ONZLOADTMP_PROVIDER: 'Cloudflare',
-    RCLONE_CONFIG_ONZLOADTMP_ENV_AUTH: 'false',
-    RCLONE_CONFIG_ONZLOADTMP_ACCESS_KEY_ID: prepared.credentials.accessKeyId,
-    RCLONE_CONFIG_ONZLOADTMP_SECRET_ACCESS_KEY: prepared.credentials.secretAccessKey,
-    RCLONE_CONFIG_ONZLOADTMP_SESSION_TOKEN: prepared.credentials.sessionToken,
-    RCLONE_CONFIG_ONZLOADTMP_ENDPOINT: prepared.endpoint,
-    RCLONE_CONFIG_ONZLOADTMP_REGION: prepared.region ?? 'auto',
-    RCLONE_CONFIG_ONZLOADTMP_NO_CHECK_BUCKET: 'true',
-  };
+async function waitBeforeRetry(attempt: number, signal: AbortSignal) {
+  await new Promise<void>((resolve, reject) => {
+    const finish = () => {
+      signal.removeEventListener('abort', cancel);
+      resolve();
+    };
+    const timer = setTimeout(finish, 500 * (2 ** (attempt - 1)));
+    const cancel = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', cancel);
+      reject(signal.reason ?? new Error('Upload đã bị hủy.'));
+    };
+    if (signal.aborted) cancel();
+    else signal.addEventListener('abort', cancel, { once: true });
+  });
+}
+
+async function runWithConcurrency<T>(items: T[], concurrency: number, task: (item: T) => Promise<void>) {
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex];
+      nextIndex += 1;
+      await task(item);
+    }
+  });
+  await Promise.all(workers);
 }
 
 export class OnzloadUploadJob {
   readonly id = randomUUID();
-  private process: ChildProcess | null = null;
+  private readonly controller = new AbortController();
   private cancelled = false;
   private settled = false;
   private uploadId: string | null = null;
-  private killTimer: NodeJS.Timeout | null = null;
-  private lastProgress: RcloneUploadProgress | null = null;
+  private completedBytes = 0;
+  private completedFiles = 0;
+  private totalBytes = 0;
+  private totalFiles = 0;
+  private startedAt = 0;
+  private lastProgressEmitAt = 0;
   private lastReportedAt = 0;
+  private readonly activeBytes = new Map<string, number>();
 
   constructor(
-    private readonly rclonePath: string,
     private readonly config: OnzloadUploadConfig,
     private readonly emit: EmitEvent,
   ) {}
@@ -219,73 +229,126 @@ export class OnzloadUploadJob {
       });
       return;
     }
-    if (!prepared.bucket || !prepared.credentials) throw new Error('OnzLoad không trả về đích upload hợp lệ.');
-    const destination = `${REMOTE_NAME}:${prepared.bucket}/${prepared.outputPrefix}`;
-    const performance = resolveRcloneUploadPerformance(this.config.performanceId);
-    const child = spawn(this.rclonePath, buildOnzloadRcloneArgs(this.config, destination), {
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: buildOnzloadRcloneEnvironment(prepared),
-    });
-    this.process = child;
-    this.emit({ type: 'started', jobId: this.id, uploadId: prepared.uploadId, destination });
+
+    this.totalBytes = folder.totalBytes;
+    this.totalFiles = folder.fileCount;
+    this.startedAt = Date.now();
+    const performance = resolveUploadPerformance(this.config.performanceId);
+    this.emit({ type: 'started', jobId: this.id, uploadId: prepared.uploadId, destination: 'OnzLoad Storage' });
     this.emit({
       type: 'log',
       jobId: this.id,
-      line: `OnzLoad đã cấp quyền upload tạm thời. Tốc độ ${performance.name}: ${performance.transfers} file song song.`,
+      line: `OnzLoad đã cấp URL upload bảo mật. Tốc độ ${performance.name}: ${performance.transfers} file song song.`,
     });
-
-    let stdoutBuffer = '';
-    let stderrBuffer = '';
-    const recentErrors: string[] = [];
-    child.stdout?.setEncoding('utf8');
-    child.stderr?.setEncoding('utf8');
-
-    const consume = (chunk: string, fromStderr: boolean) => {
-      if (fromStderr) stderrBuffer += chunk;
-      else stdoutBuffer += chunk;
-      const current = fromStderr ? stderrBuffer : stdoutBuffer;
-      const lines = current.split(/\r?\n/);
-      if (fromStderr) stderrBuffer = lines.pop() ?? '';
-      else stdoutBuffer = lines.pop() ?? '';
-      for (const line of lines) {
-        const progress = parseRcloneStatsLine(line);
-        if (progress) {
-          this.lastProgress = progress;
-          this.emit({ type: 'progress', jobId: this.id, progress });
-          this.reportProgress(progress.percent);
-          continue;
-        }
-        const message = parseLogMessage(line);
-        if (!message) continue;
-        recentErrors.push(message);
-        if (recentErrors.length > 10) recentErrors.shift();
-        this.emit({ type: 'log', jobId: this.id, line: message });
-      }
-    };
-
-    child.stdout?.on('data', (chunk: Buffer | string) => consume(String(chunk), false));
-    child.stderr?.on('data', (chunk: Buffer | string) => consume(String(chunk), true));
-    child.on('error', (error) => this.finishFailed(error.message));
-    child.on('close', (code) => {
-      void this.handleClose(code, prepared, session.baseUrl, recentErrors);
-    });
+    void this.run(prepared, folder.files, session.baseUrl, performance.transfers);
   }
 
   cancel(): boolean {
-    if (this.settled) return false;
+    if (this.settled || this.cancelled) return false;
     this.cancelled = true;
+    this.controller.abort(new Error('Upload đã bị hủy.'));
     if (this.uploadId) {
       void onzloadApiRequest(`/api/desktop/v1/uploads/${encodeURIComponent(this.uploadId)}`, { method: 'DELETE' }).catch(() => undefined);
     }
-    if (!this.process || this.process.killed) return false;
-    if (process.platform === 'win32' && this.process.pid) {
-      spawn('taskkill', ['/pid', String(this.process.pid), '/t', '/f'], { windowsHide: true });
-    } else {
-      this.process.kill('SIGTERM');
-      this.killTimer = setTimeout(() => this.process?.kill('SIGKILL'), 3_000);
-    }
     return true;
+  }
+
+  private async run(prepared: PreparedUpload, files: HlsUploadFile[], baseUrl: string, concurrency: number) {
+    try {
+      for (let offset = 0; offset < files.length; offset += PRESIGN_BATCH_SIZE) {
+        if (this.controller.signal.aborted) throw this.controller.signal.reason;
+        const batch = files.slice(offset, offset + PRESIGN_BATCH_SIZE);
+        const signed = await onzloadApiRequest<PresignedUploadBatch>(
+          `/api/desktop/v1/uploads/${encodeURIComponent(prepared.uploadId)}/files`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ files: presignRequestFiles(batch) }),
+            signal: this.controller.signal,
+          },
+        );
+        const signedByPath = new Map(signed.files.map((file) => [file.relativePath, file]));
+        if (signedByPath.size !== batch.length) throw new Error('OnzLoad trả về thiếu URL upload.');
+        await runWithConcurrency(batch, concurrency, async (file) => {
+          const signedFile = signedByPath.get(file.relativePath);
+          if (!signedFile) throw new Error(`OnzLoad chưa cấp URL cho ${file.relativePath}.`);
+          await this.uploadWithRetry(file, signedFile);
+        });
+      }
+
+      this.emit({ type: 'log', jobId: this.id, line: 'Upload xong. OnzLoad đang xác minh playlist và tạo dữ liệu video...' });
+      const completed = await onzloadApiRequest<CompletedUpload>(
+        `/api/desktop/v1/uploads/${encodeURIComponent(prepared.uploadId)}/complete`,
+        { method: 'POST', signal: this.controller.signal },
+      );
+      this.emitProgress(true);
+      const result: OnzloadUploadResult = {
+        uploadId: completed.uploadId,
+        assetId: completed.assetId,
+        encodeJobId: completed.jobId,
+        embedUrl: `${baseUrl}${completed.embedPath}`,
+      };
+      this.settled = true;
+      this.emit({ type: 'completed', jobId: this.id, result });
+    } catch (error) {
+      if (this.settled) return;
+      if (this.cancelled || this.controller.signal.aborted) {
+        this.settled = true;
+        this.emit({ type: 'cancelled', jobId: this.id });
+        return;
+      }
+      if (this.uploadId) {
+        await onzloadApiRequest(`/api/desktop/v1/uploads/${encodeURIComponent(this.uploadId)}`, { method: 'DELETE' }).catch(() => undefined);
+      }
+      this.settled = true;
+      this.emit({ type: 'failed', jobId: this.id, message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  private async uploadWithRetry(file: HlsUploadFile, signed: PresignedUploadFile) {
+    for (let attempt = 1; attempt <= UPLOAD_ATTEMPTS; attempt += 1) {
+      this.activeBytes.set(file.relativePath, 0);
+      try {
+        await uploadSignedFile(file, signed, this.controller.signal, (bytes) => {
+          this.activeBytes.set(file.relativePath, bytes);
+          this.emitProgress();
+        });
+        this.activeBytes.delete(file.relativePath);
+        this.completedBytes += file.size;
+        this.completedFiles += 1;
+        this.emitProgress();
+        return;
+      } catch (error) {
+        this.activeBytes.delete(file.relativePath);
+        if (this.controller.signal.aborted) throw error;
+        const status = error instanceof DirectUploadError ? error.status : null;
+        const retryable = status === null || status === 408 || status === 429 || status >= 500;
+        if (!retryable || attempt === UPLOAD_ATTEMPTS) throw error;
+        this.emit({ type: 'log', jobId: this.id, line: `Thử lại ${file.relativePath} (${attempt + 1}/${UPLOAD_ATTEMPTS})...` });
+        await waitBeforeRetry(attempt, this.controller.signal);
+      }
+    }
+  }
+
+  private emitProgress(forceComplete = false) {
+    const now = Date.now();
+    if (!forceComplete && now - this.lastProgressEmitAt < 250) return;
+    this.lastProgressEmitAt = now;
+    const activeBytes = Array.from(this.activeBytes.values()).reduce((total, value) => total + value, 0);
+    const bytes = forceComplete ? this.totalBytes : Math.min(this.totalBytes, this.completedBytes + activeBytes);
+    const elapsedSeconds = Math.max(0.001, (now - this.startedAt) / 1000);
+    const speedBytesPerSecond = bytes / elapsedSeconds;
+    const progress: UploadProgress = {
+      percent: forceComplete ? 100 : Math.min(99.5, (bytes / this.totalBytes) * 100),
+      bytes,
+      totalBytes: this.totalBytes,
+      speedBytesPerSecond,
+      etaSeconds: forceComplete || speedBytesPerSecond <= 0 ? 0 : (this.totalBytes - bytes) / speedBytesPerSecond,
+      files: forceComplete ? this.totalFiles : this.completedFiles,
+      totalFiles: this.totalFiles,
+    };
+    this.emit({ type: 'progress', jobId: this.id, progress });
+    this.reportProgress(progress.percent);
   }
 
   private reportProgress(percent: number) {
@@ -296,69 +359,5 @@ export class OnzloadUploadJob {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ progress: percent }),
     }).catch(() => undefined);
-  }
-
-  private async handleClose(
-    code: number | null,
-    prepared: PreparedUpload,
-    baseUrl: string,
-    recentErrors: string[],
-  ) {
-    this.clearKillTimer();
-    this.process = null;
-    if (this.settled) return;
-    if (this.cancelled) {
-      this.settled = true;
-      this.emit({ type: 'cancelled', jobId: this.id });
-      return;
-    }
-    if (code !== 0) {
-      this.finishFailed(recentErrors.slice(-4).join('\n') || `Rclone đã dừng với mã ${code ?? 'không xác định'}.`);
-      return;
-    }
-
-    try {
-      this.emit({ type: 'log', jobId: this.id, line: 'Upload xong. OnzLoad đang xác minh playlist và tạo dữ liệu video...' });
-      const completed = await onzloadApiRequest<CompletedUpload>(
-        `/api/desktop/v1/uploads/${encodeURIComponent(prepared.uploadId)}/complete`,
-        { method: 'POST' },
-      );
-      const progress = this.lastProgress;
-      this.emit({
-        type: 'progress',
-        jobId: this.id,
-        progress: {
-          percent: 100,
-          bytes: progress?.totalBytes ?? progress?.bytes ?? 0,
-          totalBytes: progress?.totalBytes ?? progress?.bytes ?? 0,
-          speedBytesPerSecond: progress?.speedBytesPerSecond ?? 0,
-          etaSeconds: 0,
-          files: progress?.totalFiles ?? progress?.files ?? 0,
-          totalFiles: progress?.totalFiles ?? progress?.files ?? 0,
-        },
-      });
-      const result: OnzloadUploadResult = {
-        uploadId: completed.uploadId,
-        assetId: completed.assetId,
-        encodeJobId: completed.jobId,
-        embedUrl: `${baseUrl}${completed.embedPath}`,
-      };
-      this.settled = true;
-      this.emit({ type: 'completed', jobId: this.id, result });
-    } catch (error) {
-      this.finishFailed(error instanceof Error ? error.message : String(error));
-    }
-  }
-
-  private finishFailed(message: string) {
-    this.clearKillTimer();
-    if (this.settled) return;
-    this.settled = true;
-    this.emit({ type: 'failed', jobId: this.id, message });
-  }
-
-  private clearKillTimer() {
-    if (this.killTimer) clearTimeout(this.killTimer);
-    this.killTimer = null;
   }
 }

@@ -20,7 +20,6 @@ import { EncodeJob } from './encoder/job';
 import { inspectHardwareAcceleration, resolveVideoEncoder } from './encoder/hardware';
 import { probeMedia } from './encoder/probe';
 import { exportSubtitleTracks } from './subtitles/export';
-import { getRclonePath } from './rclone/binary';
 import { normalizePublicBaseUrl } from '../shared/public-url';
 import { encodeStartBlocker, uploadStartBlocker } from './pipeline-concurrency';
 import { getOnzloadSessionState, loginOnzload, logoutOnzload } from './onzload/auth';
@@ -308,10 +307,7 @@ function registerIpc(): void {
       subtitleExportActive,
     });
     if (startBlocker) throw new Error(startBlocker);
-    const rclonePath = await getRclonePath();
-    if (!rclonePath) throw new Error('Không tìm thấy rclone đi kèm ứng dụng.');
-
-    const job = new OnzloadUploadJob(rclonePath, candidate, sendOnzloadUploadEvent);
+    const job = new OnzloadUploadJob(candidate, sendOnzloadUploadEvent);
     activeOnzloadUploadJob = job;
     try {
       await job.start();

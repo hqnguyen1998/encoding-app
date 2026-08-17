@@ -119,9 +119,9 @@ export interface EncodeProgress {
   statusText: string;
 }
 
-export type RcloneUploadPerformanceId = 'stable' | 'fast' | 'maximum';
+export type UploadPerformanceId = 'stable' | 'fast' | 'maximum';
 
-export interface RcloneUploadProgress {
+export interface UploadProgress {
   percent: number;
   bytes: number;
   totalBytes: number;
@@ -177,7 +177,7 @@ export interface OnzloadUploadConfig {
   originalName?: string;
   idempotencyKey: string;
   segmentDuration: number;
-  performanceId?: RcloneUploadPerformanceId;
+  performanceId?: UploadPerformanceId;
   albumId?: string;
 }
 
@@ -194,7 +194,7 @@ export interface OnzloadUploadResult {
 
 export type OnzloadUploadEvent =
   | { type: 'started'; jobId: string; uploadId: string; destination: string }
-  | { type: 'progress'; jobId: string; progress: RcloneUploadProgress }
+  | { type: 'progress'; jobId: string; progress: UploadProgress }
   | { type: 'log'; jobId: string; line: string }
   | { type: 'completed'; jobId: string; result: OnzloadUploadResult }
   | { type: 'cancelled'; jobId: string }

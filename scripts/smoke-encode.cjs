@@ -8,7 +8,6 @@ const { buildEncodeCommand } = require('../dist-electron/electron/encoder/comman
 const { buildHlsValidationArgs } = require('../dist-electron/electron/encoder/validate.js');
 const { inspectHardwareAcceleration } = require('../dist-electron/electron/encoder/hardware.js');
 const { exportSubtitleTracks } = require('../dist-electron/electron/subtitles/export.js');
-const { parseRcloneStatsLine } = require('../dist-electron/electron/onzload/upload.js');
 
 function run(binary, args, label) {
   const result = spawnSync(binary, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -26,10 +25,6 @@ const gpuOutputPath = path.join(root, 'sample-gpu-hls');
 const advancedOutputPath = path.join(root, 'sample-advanced-fmp4-hls');
 const logoPath = path.join(root, 'logo.png');
 const logoOutputPath = path.join(root, 'sample-logo-hls');
-const rcloneMirrorPath = path.join(root, 'rclone-local-mirror');
-const rclonePath = process.platform === 'win32'
-  ? path.join(__dirname, '..', 'vendor', 'rclone', 'win-x64', 'rclone.exe')
-  : path.join(__dirname, '..', 'vendor', 'rclone', 'mac-arm64', 'rclone');
 
 async function main() {
 try {
@@ -191,29 +186,6 @@ try {
     throw new Error('Chế độ Copy video thiếu master playlist, variant playlist hoặc segment.');
   }
 
-  const rcloneResult = spawnSync(
-    rclonePath,
-    [
-      'copy', copyOutputPath, rcloneMirrorPath,
-      '--use-json-log', '--stats', '100ms', '--stats-log-level', 'NOTICE', '--log-level', 'NOTICE',
-    ],
-    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-  );
-  if (rcloneResult.status !== 0) {
-    throw new Error(`Rclone local smoke thất bại:\n${rcloneResult.stderr || rcloneResult.stdout}`);
-  }
-  const rcloneStats = `${rcloneResult.stdout}\n${rcloneResult.stderr}`
-    .split(/\r?\n/)
-    .map(parseRcloneStatsLine)
-    .filter(Boolean);
-  const mirroredFiles = readdirSync(path.join(rcloneMirrorPath, 'v0'));
-  if (!readFileSync(path.join(rcloneMirrorPath, 'master.m3u8'), 'utf8').includes('#EXTM3U') || !mirroredFiles.includes('index.m3u8')) {
-    throw new Error('Rclone không copy đủ cấu trúc thư mục HLS trong smoke test.');
-  }
-  if (rcloneStats.length === 0 || rcloneStats.at(-1).percent < 99) {
-    throw new Error('Không đọc được tiến trình JSON hoàn tất từ rclone.');
-  }
-
   const subtitleSourcePath = path.join(root, 'subtitle.srt');
   const subtitledVideoPath = path.join(root, 'sample-with-subtitle.mkv');
   const subtitleOutputDirectory = path.join(root, 'subtitles');
@@ -270,7 +242,7 @@ try {
     throw new Error('Nội dung subtitle xuất ra không khớp nguồn.');
   }
 
-  console.log(`SMOKE_OK: Copy video HLS có Annex B, HLS một chất lượng có logo, ${variants} rendition adaptive HLS, HLS fMP4 nâng cao${hardwareEncoder ? `, ${hardwareEncoder.label}` : ''}, engine upload nội bộ và 1 subtitle SRT đều chính xác.`);
+  console.log(`SMOKE_OK: Copy video HLS có Annex B, HLS một chất lượng có logo, ${variants} rendition adaptive HLS, HLS fMP4 nâng cao${hardwareEncoder ? `, ${hardwareEncoder.label}` : ''} và 1 subtitle SRT đều chính xác.`);
   if (process.env.KEEP_SMOKE_OUTPUT === '1') console.log(`Output: ${outputPath}`);
 } finally {
   if (process.env.KEEP_SMOKE_OUTPUT !== '1') rmSync(root, { recursive: true, force: true });

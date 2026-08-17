@@ -68,15 +68,15 @@ Bật **Đóng logo vào video** trong phần cấu hình luồng, chọn ảnh 
 
 Trong tab **Upload OnzLoad**, bấm **Đăng nhập OnzLoad**. Trình duyệt yêu cầu người dùng xác nhận thiết bị; sau callback PKCE, token thiết bị được mã hóa bằng kho khóa của hệ điều hành.
 
-Người dùng không nhập hoặc lưu thông tin R2. Khi bắt đầu upload, encoder gửi manifest HLS cho OnzLoad; server chọn storage đang hoạt động và trả credential ngắn hạn, giới hạn trong đúng prefix của video. Engine truyền file nội bộ được buộc bỏ qua mọi `rclone.conf` có sẵn trên máy.
+Người dùng không nhập hoặc lưu thông tin R2. Khi bắt đầu upload, encoder gửi danh sách file HLS cho OnzLoad; server chọn storage đang hoạt động và cấp URL PUT ký sẵn theo từng file. File đi thẳng từ máy người dùng lên R2, còn Access Key và Secret Access Key luôn ở phía server.
 
 Bật **Tự upload và tạo video sau mỗi encode** để đầu ra được chuẩn hóa H.264/yuv420p + AAC-LC stereo 48 kHz. Sau khi truyền file, OnzLoad xác minh playlist/segment ở phía server rồi hoàn tất `MediaAsset` và `EncodeJob`; encoder chỉ nhận lại link embed.
 
-Encoder không nhận khóa storage chính, không kết nối trực tiếp PostgreSQL/Prisma và không có quyền duyệt, sửa hoặc xóa các object khác trong bucket.
+Encoder không nhận credential storage, không dùng rclone, không kết nối trực tiếp PostgreSQL/Prisma và không có quyền duyệt, sửa hoặc xóa các object khác trong bucket.
 
 ## Tạo bộ cài
 
-Các lệnh đóng gói tự chuẩn bị binary cần thiết trong `vendor/`. Engine upload nội bộ được tải từ bản phát hành chính thức và kiểm tra SHA-256; trên Windows, FFmpeg/FFprobe được sao chép từ dependency đã cài bằng `npm ci`. Binary sinh ra không được commit vào Git.
+Trên Windows, lệnh đóng gói tự sao chép FFmpeg/FFprobe từ dependency đã cài bằng `npm ci` vào `vendor/`. Binary sinh ra không được commit vào Git. macOS dùng trực tiếp FFmpeg/FFprobe từ dependency đã đóng gói.
 
 Trên macOS:
 
